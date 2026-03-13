@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -301,15 +300,27 @@ class M3U8Handler:
 
             if use_ffmpeg:
                 try:
-                    subprocess.run([
+                    process = await asyncio.create_subprocess_exec(
                         "ffmpeg", "-y", "-i", video_merged, "-i", audio_merged,
                         "-c", "copy", "-map", "0:v:0", "-map", "1:a:0",
-                        output_path
-                    ], check=True, capture_output=True)
-                    logger.info(f"✓ 视频下载完成: {output_path}")
-                    return True
-                except subprocess.CalledProcessError as e:
-                    logger.warning(f"ffmpeg 合并失败: {e}")
+                        output_path,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    _, stderr = await process.communicate()
+                    if process.returncode == 0:
+                        logger.info(f"✓ 视频下载完成: {output_path}")
+                        return True
+
+                    error_output = (
+                        stderr.decode("utf-8", errors="ignore").strip()
+                        if stderr else
+                        ""
+                    )
+                    logger.warning(
+                        f"ffmpeg 合并失败(退出码 {process.returncode}): "
+                        f"{error_output[:200]}"
+                    )
                     shutil.move(video_merged, output_path)
                     logger.info(f"✓ 视频下载完成（无音频）: {output_path}")
                     return True

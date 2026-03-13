@@ -9,7 +9,7 @@ import aiohttp
 
 from ..logger import logger
 
-from .utils import check_cache_dir_available, process_gather_results
+from .utils import check_cache_dir_available, process_gather_results, strip_media_prefixes
 from .validator import get_video_size, validate_media_url
 from .router import download_media
 from ..file_cleaner import cleanup_files
@@ -183,10 +183,7 @@ class DownloadManager:
             proxy_url = metadata.get('proxy_url') or proxy_addr
             proxy = proxy_url if (use_video_proxy and proxy_url) else None
             video_url = url_list[0]
-            if video_url.startswith('m3u8:'):
-                video_url = video_url[5:]
-            elif video_url.startswith('range:'):
-                video_url = video_url[6:]
+            video_url = strip_media_prefixes(video_url)
             return await get_video_size(session, video_url, headers, proxy)
         except Exception:
             return None, None
@@ -564,10 +561,11 @@ class DownloadManager:
         video_count = len(video_urls)
         image_count = len(image_urls)
         video_sizes = []
+        video_has_access_denied = False
         
         if video_urls and self.max_video_size_mb > 0:
             logger.debug(f"开始检查视频大小: {url}, 视频数量: {len(video_urls)}")
-            video_sizes, _ = await self._check_video_sizes(
+            video_sizes, video_has_access_denied = await self._check_video_sizes(
                 session, video_urls, metadata, proxy_addr
             )
             
@@ -587,7 +585,13 @@ class DownloadManager:
             )
         else:
             return await self._process_with_direct_link(
-                session, metadata, video_urls, image_urls, video_sizes, proxy_addr
+                session,
+                metadata,
+                video_urls,
+                image_urls,
+                video_sizes,
+                proxy_addr,
+                initial_video_has_access_denied=video_has_access_denied
             )
 
     async def _process_with_pre_download(
@@ -695,7 +699,8 @@ class DownloadManager:
         video_urls: List[List[str]],
         image_urls: List[List[str]],
         video_sizes: List[Optional[float]],
-        proxy_addr: str = None
+        proxy_addr: str = None,
+        initial_video_has_access_denied: bool = False
     ) -> Dict[str, Any]:
         url = metadata.get('url', '')
         video_force_download = metadata.get('video_force_download', False)
@@ -709,11 +714,14 @@ class DownloadManager:
             video_urls = []
             metadata['video_urls'] = []
         
-        video_has_access_denied = False
+        video_has_access_denied = initial_video_has_access_denied
         if video_urls:
             if not video_sizes:
-                video_sizes, video_has_access_denied = await self._check_video_sizes(
+                video_sizes, checked_has_access_denied = await self._check_video_sizes(
                     session, video_urls, metadata, proxy_addr
+                )
+                video_has_access_denied = (
+                    video_has_access_denied or checked_has_access_denied
                 )
         
         valid_sizes = [s for s in video_sizes if s is not None]

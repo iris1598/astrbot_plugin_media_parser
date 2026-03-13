@@ -184,6 +184,24 @@ def get_video_suffix(content_type: str = None, url: str = None) -> str:
     return '.mp4'
 
 
+def strip_media_prefixes(url: str) -> str:
+    """剥离媒体URL前缀，返回可直接访问的URL。
+
+    处理顺序：dash -> m3u8 -> range
+    """
+    if not url:
+        return ""
+
+    stripped = url
+    if stripped.startswith('dash:'):
+        stripped = stripped[5:].split('||', 1)[0]
+    if stripped.startswith('m3u8:'):
+        stripped = stripped[5:]
+    if stripped.startswith('range:'):
+        stripped = stripped[6:]
+    return stripped
+
+
 def process_gather_results(
     results: List[Any],
     items: List[Dict[str, Any]]

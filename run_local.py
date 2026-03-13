@@ -12,6 +12,7 @@ if _project_root not in sys.path:
 try:
     from core.constants import Config
     from core.parser import ParserManager
+    from core.parser.utils import format_duration_ms
     from core.downloader import DownloadManager
     from core.parser.platform import (
         BilibiliParser,
@@ -50,6 +51,20 @@ def print_metadata(metadata: Dict[str, Any], url: str, parser_name: str):
     print(f"作者: {metadata.get('author', 'N/A')}")
     print(f"简介: {metadata.get('desc', 'N/A')}")
     print(f"发布时间: {metadata.get('timestamp', 'N/A')}")
+    
+    access_status = metadata.get("access_status")
+    access_message = metadata.get("access_message")
+    available_length = format_duration_ms(metadata.get("available_length_ms"))
+    full_length = format_duration_ms(metadata.get("timelength_ms"))
+    if access_status and access_status != "full" and access_message:
+        print(f"时长: {access_message}")
+    elif metadata.get("is_preview_only") and available_length:
+        if full_length:
+            print(f"时长: 当前可解析 {available_length} / 全长 {full_length}")
+        else:
+            print(f"时长: 当前可解析 {available_length}")
+    elif full_length:
+        print(f"时长: {full_length}")
     
     video_urls = metadata.get('video_urls', [])
     image_urls = metadata.get('image_urls', [])
@@ -296,9 +311,29 @@ async def main(
     if debug_mode:
         logger.setLevel(logging.DEBUG)
         logger.debug("Debug模式已启用")
+
+    bilibili_cookie_dir = os.path.join(
+        os.path.dirname(__file__),
+        "core",
+        "parser",
+        "runtime_manager",
+        "bilibili"
+    )
+    os.makedirs(bilibili_cookie_dir, exist_ok=True)
+    bilibili_cookie_runtime_file = os.path.join(
+        bilibili_cookie_dir,
+        "cookie.json"
+    )
     
     parsers = [
-        BilibiliParser(),
+        BilibiliParser(
+            cookie_runtime_enabled=True,
+            configured_cookie="",
+            max_quality=0,
+            admin_assist_enabled=False,
+            credential_path=bilibili_cookie_runtime_file,
+            local_debug_mode=True
+        ),
         DouyinParser(),
         KuaishouParser(),
         WeiboParser(),
@@ -334,6 +369,7 @@ async def main(
     if use_proxy and proxy_url:
         print(f"  代理: {proxy_url}")
     print(f"  下载目录: {cache_dir}")
+    print(f"  B站Cookie文件: {bilibili_cookie_runtime_file}")
     print("=" * 80)
     
     timeout = aiohttp.ClientTimeout(total=Config.DEFAULT_TIMEOUT)

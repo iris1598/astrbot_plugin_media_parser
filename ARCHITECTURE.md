@@ -22,7 +22,10 @@ astrbot_plugin_media_parser/
 │   │   ├── manager.py               # 解析器管理器
 │   │   ├── router.py                # 链接路由分发器
 │   │   ├── utils.py                 # 解析器工具函数
-│   │   └── platform/                 # 各平台解析器实现
+│   │   ├── runtime_manager/         # 平台运行时管理模块（Cookie/登录态）
+│   │   │   └── bilibili/
+│   │   │       └── auth.py          # B站登录态运行时（BilibiliAuthRuntime）
+│   │   └── platform/                # 各平台解析器实现
 │   │       ├── base.py              # 解析器基类
 │   │       ├── bilibili.py          # B站解析器
 │   │       ├── douyin.py            # 抖音解析器
@@ -37,11 +40,17 @@ astrbot_plugin_media_parser/
 │   │   ├── utils.py                 # 下载器工具函数
 │   │   ├── validator.py             # 媒体验证器
 │   │   └── handler/                 # 各类型下载处理器
-│   │       ├── base.py              # 下载器基类
+│   │       ├── base.py              # 下载器基础工具（流式下载、Range并发下载）
 │   │       ├── image.py             # 图片下载器
 │   │       ├── normal_video.py      # 普通视频下载器
-│   │       ├── range_video.py       # 分片视频下载器
+│   │       ├── range_downloader.py  # Range下载封装器（range:前缀 → Range + 降级normal）
+│   │       ├── dash.py              # DASH音视频下载器（video+audio分别下载 + ffmpeg合并）
 │   │       └── m3u8.py              # M3U8流媒体下载器
+│   ├── interaction/                 # 管理员交互模块
+│   │   ├── base.py                  # 管理员协助基类（AdminAssistManager）
+│   │   └── platform/
+│   │       └── bilibili/
+│   │           └── cookie_assist.py # B站Cookie协助登录管理器
 │   └── message_adapter/             # 消息适配器模块
 │       ├── __init__.py              # 暴露 Sender 和 Builder
 │       ├── node_builder.py          # 节点构建器
@@ -87,6 +96,10 @@ astrbot_plugin_media_parser/
   - 提取媒体元数据（标题、作者、视频URL、图片URL等）
   - 处理平台特定的请求头和参数
 
+- **运行时管理器** (runtime_manager/)
+  - 管理平台辅助运行时（Cookie/登录态等）
+  - 当前包含 `BilibiliAuthRuntime`，供 `BilibiliParser` 调用
+
 #### 1.3.4 下载器模块 (downloader/)
 - **DownloadManager**: 下载管理器
   - 管理媒体下载流程
@@ -97,17 +110,18 @@ astrbot_plugin_media_parser/
   - 处理代理配置（从元数据中读取平台特定的代理设置）
 
 - **Router**: 媒体下载路由
-  - 检测媒体类型（图片/视频/M3U8）
-  - 路由到对应的下载处理器
+  - 检测媒体类型（DASH/M3U8/图片/视频）
+  - 按 `dash:` → `m3u8:` → `range:` → 普通 的优先级路由到对应下载处理器
 
 - **下载处理器** (handler/)
-  - **Base Handler**: 基础下载器（提供通用下载逻辑）
-    - 流式下载（视频）和完整下载（图片）
-    - 媒体响应验证
-    - 文件大小提取
+  - **Base Handler**: 基础下载工具
+    - `range_download_file`：通用 Range 并发下载（探测大小、分片、seek+write）
+    - `download_media_from_url`：通用流式下载
+    - `download_media_stream`：底层流写入
   - **Image Handler**: 图片下载器
-  - **Normal Video Handler**: 普通视频下载器（完整下载）
-  - **Range Video Handler**: 分片视频下载器（支持Range请求，并发下载）
+  - **Normal Video Handler**: 普通视频下载器（流式下载）
+  - **Range Downloader Handler**: Range 下载封装器（`range:` 前缀 → Range 并发 → 降级 normal_video）
+  - **DASH Handler**: DASH 音视频下载器（拆分 video/audio 并发下载 + ffmpeg 合并；各子流可独立带 `range:` 前缀加速）
   - **M3U8 Handler**: M3U8流媒体下载器（支持FFmpeg转换）
 
 - **Validator**: 媒体验证器
@@ -129,17 +143,30 @@ astrbot_plugin_media_parser/
   - 非打包模式发送（独立发送）
   - 处理大媒体单独发送逻辑
 
-#### 1.3.6 工具模块
+#### 1.3.6 管理员交互模块 (interaction/)
+- **AdminAssistManager**: 管理员协助基类
+  - 管理管理员私聊会话标识
+  - 提供 `try_update_admin_origin`、`_send_private_text`、`shutdown` 等通用能力
+  - 定义 `handle_admin_reply`、`trigger_assist_request` 抽象接口
+
+- **BilibiliAdminCookieAssistManager**: B站Cookie协助登录管理器
+  - 继承 `AdminAssistManager`
+  - 位于 `interaction/platform/bilibili/cookie_assist.py`
+  - 当B站Cookie不可用时，后台触发管理员确认 → 发送登录链接/二维码 → 轮询登录状态
+  - 管理员发送可解析链接时不拦截消息（仅拦截纯文本回复）
+
+#### 1.3.7 工具模块
 - **FileCleaner**: 文件清理工具
   - 清理临时文件
   - 清理缓存目录
+  - 删除文件后自动移除空父目录
 
 - **Constants**: 常量定义
   - 超时时间
   - 大小限制
   - 默认配置值
 
-#### 1.3.7 本地测试工具 (run_local.py)
+#### 1.3.8 本地测试工具 (run_local.py)
 - **run_local.py**: 本地测试工具脚本
   - 提供交互式命令行界面
   - 支持输入链接并解析
@@ -148,14 +175,15 @@ astrbot_plugin_media_parser/
   - 支持代理配置和调试模式
   - 用于本地开发和调试
 
-#### 1.3.8 资源管理
+#### 1.3.9 资源管理
 - **DownloadManager.shutdown()**: 资源清理方法
   - 关闭所有活动的aiohttp会话
   - 取消所有正在进行的下载任务
   - 在插件terminate时调用
 - **FileCleaner**: 文件清理工具
   - 清理临时文件（图片）
-  - 清理视频文件
+  - 清理视频文件（含 DASH 临时 .m4s 文件）
+  - 删除文件后自动移除空父目录
   - 清理缓存目录
 
 ## 二、程序执行链
@@ -164,6 +192,12 @@ astrbot_plugin_media_parser/
 
 ```
 消息接收
+  ↓
+更新管理员私聊会话标识 (AdminAssistManager.try_update_admin_origin)
+  ↓
+权限检查 → 消息文本提取 → 提取可解析链接
+  ├─ 有链接 → 跳过交互处理器，进入解析流程
+  └─ 无链接 → 检查管理员交互（handle_admin_reply） → 返回
   ↓
 判断是否需要解析 (ConfigManager)
   ├─ 自动解析模式 → 直接解析
@@ -210,6 +244,8 @@ astrbot_plugin_media_parser/
 ```
 main.py::VideoParserPlugin.auto_parse()
   ↓
+admin_cookie_assist.try_update_admin_origin(event)
+  ↓
 权限与黑白名单检查
   ├─ 检查 白名单/黑名单 使能状态
   ├─ 优先级：个人白名单 > 个人黑名单 > 群组白名单 > 群组黑名单
@@ -219,6 +255,10 @@ main.py::VideoParserPlugin.auto_parse()
   ├─ 普通消息 → 直接使用 message_str
   └─ QQ小程序卡片 → 提取 qqdocurl 或 jumpUrl
   ↓
+提取可解析链接 (extract_all_links)
+  ├─ 有链接 → 进入 _should_parse 检查
+  └─ 无链接 → handle_admin_reply（管理员交互） → 返回
+  ↓
 main.py::VideoParserPlugin._should_parse()
   ├─ is_auto_parse = True → 返回 True
   └─ 检查 trigger_keywords → 匹配则返回 True
@@ -227,8 +267,6 @@ main.py::VideoParserPlugin._should_parse()
 #### 2.2.2 链接提取阶段
 
 ```
-main.py::VideoParserPlugin.auto_parse()
-  ↓
 parser::manager::ParserManager.extract_all_links()
   ↓
 parser::router::LinkRouter.extract_links_with_parser()
@@ -265,7 +303,7 @@ parser::manager::ParserManager.parse_text()
   ├─ desc: 描述（可选）
   ├─ timestamp: 发布时间（可选，格式：Y-M-D）
   ├─ platform: 平台标识（解析器名称）
-  ├─ video_urls: 视频URL列表（二维列表，可能包含range:或m3u8:前缀）
+  ├─ video_urls: 视频URL列表（二维列表，可能包含dash:、range:、m3u8:等可组合前缀）
   ├─ image_urls: 图片URL列表（二维列表）
   ├─ video_headers: 视频请求头
   ├─ image_headers: 图片请求头
@@ -293,11 +331,12 @@ downloader::manager::DownloadManager.process_metadata()
   │   ├─ 批量下载所有媒体（并发控制）
   │   │   └─ downloader::router::download_media()
   │   │       ├─ 检测媒体类型（通过URL特征或前缀）
-  │   │       └─ 路由到对应下载器
+  │   │       └─ 路由到对应下载器（按 dash: → m3u8: → range: → 普通 优先级）
+  │   │           ├─ dash:前缀 → handler::dash（video+audio 分别下载+ffmpeg合并，子流可带 range: 加速）
+  │   │           ├─ m3u8:前缀或.m3u8扩展名 → handler::m3u8（FFmpeg转换，支持代理）
+  │   │           ├─ range:前缀 → handler::range_downloader（并发Range请求，降级normal_video）
   │   │           ├─ image → handler::image（支持代理）
-  │   │           ├─ video → handler::normal_video（支持代理）
-  │   │           ├─ range:前缀 → handler::range_video（并发Range请求，支持代理）
-  │   │           └─ m3u8:前缀或.m3u8扩展名 → handler::m3u8（FFmpeg转换，支持代理）
+  │   │           └─ video → handler::normal_video（支持代理）
   │   ├─ 处理下载结果（统计成功/失败数量）
   │   ├─ 处理video_force_download标志（全部失败时跳过视频）
   │   └─ 更新元数据（file_paths, video_sizes, has_valid_media等）
@@ -382,7 +421,8 @@ finally 块
   ↓
 file_cleaner::cleanup_files()
   ├─ 清理临时文件（图片）
-  └─ 清理视频文件
+  ├─ 清理视频文件
+  └─ 自动移除空的缓存子目录（_try_remove_empty_parent）
   ↓
 清理完成
 
@@ -391,6 +431,7 @@ file_cleaner::cleanup_files()
 - 大媒体单独发送，每个链接发送后立即清理其视频文件
 - 非打包模式下，每个链接发送后立即清理其视频文件
 - 所有临时文件（图片）在finally块中统一清理
+- DASH下载的临时.m4s文件在合并后由dash handler内部清理
 ```
 
 #### 2.2.8 插件终止阶段
@@ -447,6 +488,7 @@ file_cleaner::cleanup_directory()
   ├─ Semaphore 控制最大并发数（max_concurrent_downloads）
   ├─ 批量下载时并发下载所有媒体项
   ├─ Range视频下载：内部使用Semaphore控制Range请求并发数
+  ├─ DASH视频下载：video+audio并发下载（各子流可独立走Range或普通），完成后ffmpeg合并
   ├─ M3U8视频下载：内部使用Semaphore控制分片下载并发数
   └─ 单个媒体失败不影响其他媒体
   ↓
@@ -515,26 +557,28 @@ file_cleaner::cleanup_directory()
 ### 4.2 文件流转
 
 ```
-媒体URL（可能包含range:或m3u8:前缀）
+媒体URL（可能包含dash:、range:、m3u8:等可组合前缀）
   ↓
 下载处理
   ├─ 预下载模式 → 缓存目录
   │   └─ {platform}_{url_hash}_{timestamp}/media_{index}.{ext}
-  │       ├─ 视频：支持Range并发下载、M3U8分片下载+FFmpeg合并
+  │       ├─ DASH视频：video+audio分别下载（可带range:加速）→ ffmpeg合并
+  │       ├─ 普通视频：支持Range并发下载
+  │       ├─ M3U8视频：分片下载+FFmpeg合并
   │       └─ 图片：完整下载
   └─ 直链模式（仅图片）→ 临时目录
       └─ temp_image_{index}.{ext}
   ↓
 节点构建
-  ├─ 本地文件 → fromFileSystem()（去除URL前缀）
-  └─ 直链 → fromURL()（去除range:或m3u8:前缀）
+  ├─ 本地文件 → fromFileSystem()
+  └─ 直链 → fromURL()（strip_media_prefixes 剥离所有前缀）
   ↓
 消息发送
   ├─ 打包模式：普通媒体发送后清理视频文件
   ├─ 非打包模式：每个链接发送后清理视频文件
   └─ 所有临时文件在finally块中统一清理
   ↓
-文件清理 → 删除临时文件和视频文件
+文件清理 → 删除临时文件和视频文件 → 自动移除空父目录
 ```
 
 ### 4.3 代理流转

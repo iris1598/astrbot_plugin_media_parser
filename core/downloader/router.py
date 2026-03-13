@@ -5,7 +5,8 @@ import aiohttp
 
 from .handler.image import download_image_to_cache
 from .handler.normal_video import download_video_to_cache
-from .handler.range_video import download_video_to_cache as download_range_video_to_cache
+from .handler.range_downloader import download_video_with_range_to_cache
+from .handler.dash import download_dash_to_cache
 from .handler.m3u8 import M3U8Handler
 
 
@@ -62,7 +63,7 @@ def detect_media_type(url: str) -> Literal['m3u8', 'image', 'video']:
 async def download_media(
     session: aiohttp.ClientSession,
     media_url: str,
-    media_type: Optional[Literal['m3u8', 'image', 'video']] = None,
+    media_type: Optional[Literal['dash', 'm3u8', 'image', 'video']] = None,
     cache_dir: Optional[str] = None,
     media_id: Optional[str] = None,
     index: int = 0,
@@ -89,11 +90,36 @@ async def download_media(
         下载结果字典，包含file_path和size_mb字段，失败时为None
     """
     actual_url = media_url
+    dash_video_url = ""
+    dash_audio_url = ""
+
+    if media_url.startswith('dash:'):
+        payload = media_url[5:]
+        parts = payload.split('||', 1)
+        dash_video_url = parts[0].strip()
+        dash_audio_url = parts[1].strip() if len(parts) > 1 else ""
+        actual_url = dash_video_url
+        media_type = 'dash'
+
     if media_url.startswith('m3u8:'):
         actual_url = media_url[5:]
         media_type = 'm3u8'
     elif media_type is None:
         media_type = detect_media_type(media_url)
+
+    if media_type == 'dash':
+        if not cache_dir or not dash_video_url:
+            return None
+        return await download_dash_to_cache(
+            session=session,
+            video_url=dash_video_url,
+            audio_url=dash_audio_url,
+            cache_dir=cache_dir,
+            media_id=media_id or 'media',
+            index=index,
+            headers=headers,
+            proxy=proxy
+        )
     
     if media_type == 'm3u8':
         if not cache_dir:
@@ -139,7 +165,7 @@ async def download_media(
             use_range_download = True
         
         if use_range_download:
-            return await download_range_video_to_cache(
+            return await download_video_with_range_to_cache(
                 session=session,
                 video_url=actual_url,
                 cache_dir=cache_dir,

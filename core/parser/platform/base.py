@@ -90,10 +90,28 @@ class BaseVideoParser(ABC):
             if url_list and isinstance(url_list, list):
                 prefixed_list = []
                 for url in url_list:
-                    if url and not url.startswith('range:'):
-                        prefixed_list.append(f'range:{url}')
-                    else:
+                    if not url:
                         prefixed_list.append(url)
+                        continue
+
+                    if url.startswith('dash:'):
+                        payload = url[5:]
+                        parts = payload.split('||', 1)
+                        prefixed_parts = []
+                        for part in parts:
+                            if part and not (
+                                part.startswith('range:') or
+                                part.startswith('m3u8:') or
+                                part.startswith('dash:')
+                            ):
+                                prefixed_parts.append(f'range:{part}')
+                            else:
+                                prefixed_parts.append(part)
+                        prefixed_list.append(f"dash:{'||'.join(prefixed_parts)}")
+                    elif url.startswith('range:') or url.startswith('m3u8:'):
+                        prefixed_list.append(url)
+                    else:
+                        prefixed_list.append(f'range:{url}')
                 result.append(prefixed_list)
             else:
                 result.append(url_list)

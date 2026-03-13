@@ -20,6 +20,7 @@ def cleanup_file(file_path: str) -> bool:
     try:
         if os.path.isfile(file_path):
             os.unlink(file_path)
+            _try_remove_empty_parent(file_path)
             return True
         else:
             logger.warning(f"路径不是文件: {file_path}")
@@ -27,6 +28,17 @@ def cleanup_file(file_path: str) -> bool:
     except Exception as e:
         logger.warning(f"清理文件失败: {file_path}, 错误: {e}")
         return False
+
+
+def _try_remove_empty_parent(file_path: str) -> None:
+    """尝试删除文件所在的空父目录（仅当目录为空时才删除）。"""
+    parent = os.path.dirname(file_path)
+    if not parent:
+        return
+    try:
+        os.rmdir(parent)
+    except OSError:
+        pass
 
 
 def cleanup_files(file_paths: List[str]) -> None:

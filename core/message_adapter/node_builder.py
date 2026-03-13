@@ -6,6 +6,7 @@ from ..logger import logger
 from astrbot.api.message_components import Plain, Image, Video, Node, Nodes
 
 from ..file_cleaner import cleanup_file
+from ..downloader.utils import strip_media_prefixes
 
 
 def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, enable_text_metadata: bool = True) -> Optional[Plain]:
@@ -57,6 +58,35 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
         metadata.get('desc') or 
         metadata.get('timestamp')
     )
+
+    access_status = metadata.get("access_status")
+    access_message = metadata.get("access_message")
+    available_length_ms = metadata.get("available_length_ms")
+    timelength_ms = metadata.get("timelength_ms")
+    is_preview_only = metadata.get("is_preview_only")
+    if access_status and access_status != "full" and access_message:
+        text_parts.append(f"时长：{access_message}")
+    elif is_preview_only and available_length_ms:
+        try:
+            available_seconds = max(0, int(available_length_ms) // 1000)
+            full_seconds = (
+                max(0, int(timelength_ms) // 1000)
+                if timelength_ms is not None else
+                None
+            )
+            available_min, available_sec = divmod(available_seconds, 60)
+            if full_seconds is not None:
+                full_min, full_sec = divmod(full_seconds, 60)
+                text_parts.append(
+                    f"时长：当前可解析 {available_min:02d}:{available_sec:02d} / "
+                    f"全长 {full_min:02d}:{full_sec:02d}"
+                )
+            else:
+                text_parts.append(
+                    f"时长：当前可解析 {available_min:02d}:{available_sec:02d}"
+                )
+        except (TypeError, ValueError):
+            pass
     
     if metadata.get('error'):
         text_parts.append(f"解析失败：{metadata['error']}")
@@ -170,11 +200,7 @@ def build_media_nodes(
             except Exception as e:
                 logger.warning(f"构建视频节点失败: {video_file_path}, 错误: {e}")
         else:
-            actual_video_url = video_url
-            if video_url.startswith('range:'):
-                actual_video_url = video_url[6:]
-            elif video_url.startswith('m3u8:'):
-                actual_video_url = video_url[5:]
+            actual_video_url = strip_media_prefixes(video_url)
             
             try:
                 nodes.append(Video.fromURL(actual_video_url))

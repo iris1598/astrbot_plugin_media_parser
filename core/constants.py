@@ -16,7 +16,7 @@ class Config:
     
     M3U8_MAX_CONCURRENT_SEGMENTS = 10
     
-    DOWNLOAD_MANAGER_MAX_CONCURRENT = 3
+    DOWNLOAD_MANAGER_MAX_CONCURRENT = 5
     PARSER_MAX_CONCURRENT = 10
     
     DEFAULT_CACHE_DIR = "/app/sharedFolder/video_parser/cache"

@@ -26,10 +26,16 @@
         }
     },
     "permissions": {
-        "description": "触发权限",
+        "description": "权限配置",
         "type": "object",
         "hint": "优先级：个人白名单 > 个人黑名单 > 群组白名单 > 群组黑名单",
         "items": {
+            "admin_id": {
+                "description": "管理员",
+                "type": "string",
+                "hint": "最高权限用户，同时接收插件私聊通知。默认自动加入用户白名单",
+                "default": ""
+            },
             "whitelist": {
                 "description": "白名单设置",
                 "hint": "如启用白名单但不配置具体名单会导致所有消息均无权限解析",
@@ -220,6 +226,63 @@
                         "description": "Twitter视频下载是否使用代理",
                         "type": "bool",
                         "default": true
+                    }
+                }
+            }
+        }
+    },
+    "cookie_settings": {
+        "description": "Cookie管理",
+        "type": "object",
+        "items": {
+            "bilibili": {
+                "description": "B站",
+                "type": "object",
+                "items": {
+                    "use_cookie_for_parsing": {
+                        "description": "是否携带Cookie解析视频",
+                        "type": "bool",
+                        "hint": "开启并配置有效cookie后可以解析更高画质视频，需同时打开预下载",
+                        "default": false
+                    },
+                    "cookie": {
+                        "description": "Cookie",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "enable_admin_assist_on_expire": {
+                        "description": "Cookie过期时通知管理员协助登录",
+                        "type": "bool",
+                        "hint": "启用后，将在Cookie不可用时私聊管理员请求协助登录，登录态持久化数据默认保存在对应平台的runtime_manager目录内",
+                        "default": false
+                    },
+                    "admin_reply_timeout_minutes": {
+                        "description": "管理员回复有效期(分钟)",
+                        "type": "int",
+                        "hint": "开启管理员协助后，每次等待管理员回复“确定”的有效时长",
+                        "default": 1440
+                    },
+                    "admin_request_cooldown_minutes": {
+                        "description": "协助请求冷却时间(分钟)",
+                        "type": "int",
+                        "hint": "开启管理员协助后，每次Cookie过期后再次私聊管理员的最小间隔",
+                        "default": 1440
+                    },
+                    "max_quality": {
+                        "description": "最高画质",
+                        "type": "string",
+                        "options": [
+                            "不限制",
+                            "4K",
+                            "1080P60",
+                            "1080P+",
+                            "1080P",
+                            "720P",
+                            "480P",
+                            "360P"
+                        ],
+                        "hint": "限制解析B站视频时的最高画质，实际画质取决于账号权限和视频源",
+                        "default": "不限制"
                     }
                 }
             }

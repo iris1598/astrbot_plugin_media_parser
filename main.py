@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import aiohttp
 
@@ -17,6 +17,7 @@ from .core.constants import Config
 from .core.message_adapter.sender import MessageSender
 from .core.message_adapter.node_builder import build_all_nodes
 from .core.config_manager import ConfigManager
+from .core.interaction.platform.bilibili import BilibiliAdminCookieAssistManager
 
 
 @register(
@@ -36,6 +37,12 @@ class VideoParserPlugin(Star):
         
         parsers = self.config_manager.create_parsers()
         self.parser_manager = ParserManager(parsers)
+        self.bilibili_parser = self.config_manager.bilibili_parser
+        self.bilibili_auth_runtime = (
+            self.bilibili_parser.get_auth_runtime()
+            if self.bilibili_parser else
+            None
+        )
         
         self.download_manager = DownloadManager(
             max_video_size_mb=self.config_manager.max_video_size_mb,
@@ -45,17 +52,43 @@ class VideoParserPlugin(Star):
             max_concurrent_downloads=self.config_manager.max_concurrent_downloads
         )
         
-        self.message_sender = MessageSender(logger=self.logger)
+        self.message_sender = MessageSender()
+        self.admin_cookie_assist = BilibiliAdminCookieAssistManager(
+            context=self.context,
+            admin_id=self.config_manager.admin_id,
+            enabled=(
+                self.config_manager.bilibili_cookie_runtime_enabled and
+                self.config_manager.bilibili_enable_admin_assist_on_expire
+            ),
+            reply_timeout_minutes=self.config_manager.bilibili_admin_reply_timeout_minutes,
+            request_cooldown_minutes=self.config_manager.bilibili_admin_request_cooldown_minutes
+        )
 
     async def terminate(self):
         """插件终止时的清理工作"""
+        await self.admin_cookie_assist.shutdown()
         await self.download_manager.shutdown()
         
         if self.download_manager.cache_dir:
             cleanup_directory(self.download_manager.cache_dir)
 
+    def _trigger_bilibili_cookie_assist_if_needed(self):
+        if not self.bilibili_parser:
+            return
+        reason = self.bilibili_parser.consume_assist_request()
+        if not reason:
+            return
+        self.admin_cookie_assist.trigger_assist_request(reason)
+
     def _check_permission(self, is_private: bool, sender_id: Any, group_id: Any) -> bool:
         """检查用户或群组是否有权限使用解析"""
+        admin_id = self.config_manager.admin_id
+        sender_id_str = str(sender_id or "").strip()
+        group_id_str = "" if is_private else str(group_id or "").strip()
+
+        if admin_id and sender_id_str == str(admin_id):
+            return True
+
         w_enable = self.config_manager.whitelist_enable
         w_user = self.config_manager.whitelist_user
         w_group = self.config_manager.whitelist_group
@@ -64,13 +97,13 @@ class VideoParserPlugin(Star):
         b_group = self.config_manager.blacklist_group
 
         allowed = None
-        if w_enable and sender_id in w_user:
+        if w_enable and sender_id_str in w_user:
             allowed = True
-        elif b_enable and sender_id in b_user:
+        elif b_enable and sender_id_str in b_user:
             allowed = False
-        elif w_enable and not is_private and group_id in w_group:
+        elif w_enable and group_id_str and group_id_str in w_group:
             allowed = True
-        elif b_enable and not is_private and group_id in b_group:
+        elif b_enable and group_id_str and group_id_str in b_group:
             allowed = False
             
         if allowed is None:
@@ -78,7 +111,7 @@ class VideoParserPlugin(Star):
 
         return allowed
         
-    def _extract_url_from_json_card(self, event: AstrMessageEvent) -> str | None:
+    def _extract_url_from_json_card(self, event: AstrMessageEvent) -> Optional[str]:
         """尝试从QQ结构化卡片消息中提取URL"""
         try:
             messages = event.get_messages()
@@ -126,6 +159,8 @@ class VideoParserPlugin(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def auto_parse(self, event: AstrMessageEvent):
         """自动解析消息中的视频链接"""
+        self.admin_cookie_assist.try_update_admin_origin(event)
+
         is_private = event.is_private_chat()
         sender_id = event.get_sender_id()
         group_id = None if is_private else event.get_group_id()
@@ -141,11 +176,16 @@ class VideoParserPlugin(Star):
                 self.logger.debug(f"[media_parser] 从JSON卡片提取到链接: {card_url}")
             message_text = card_url
         
-        if not self._should_parse(message_text):
+        links_with_parser = self.parser_manager.extract_all_links(message_text)
+
+        if not links_with_parser:
+            await self.admin_cookie_assist.handle_admin_reply(
+                event,
+                self.bilibili_auth_runtime
+            )
             return
         
-        links_with_parser = self.parser_manager.extract_all_links(message_text)
-        if not links_with_parser:
+        if not self._should_parse(message_text):
             return
         
         if self.config_manager.debug_mode:
@@ -157,8 +197,10 @@ class VideoParserPlugin(Star):
         async with aiohttp.ClientSession(timeout=timeout) as session:
             metadata_list = await self.parser_manager.parse_text(
                 message_text,
-                session
+                session,
+                links_with_parser=links_with_parser
             )
+            self._trigger_bilibili_cookie_assist_if_needed()
             if not metadata_list:
                 if self.config_manager.debug_mode:
                     self.logger.debug("解析后未获得任何元数据")
@@ -166,7 +208,11 @@ class VideoParserPlugin(Star):
             
             has_valid_metadata = any(
                 not metadata.get('error') and 
-                (bool(metadata.get('video_urls')) or bool(metadata.get('image_urls')))
+                (
+                    bool(metadata.get('video_urls')) or
+                    bool(metadata.get('image_urls')) or
+                    bool(metadata.get('access_message'))
+                )
                 for metadata in metadata_list
             )
             

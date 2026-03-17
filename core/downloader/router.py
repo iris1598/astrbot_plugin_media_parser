@@ -1,3 +1,4 @@
+"""下载路由工具，根据链接特征识别媒体类型。"""
 import re
 from typing import Optional, Dict, Any, Literal
 

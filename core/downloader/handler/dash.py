@@ -1,3 +1,4 @@
+"""DASH 下载处理器，负责音视频流下载与合并。"""
 import asyncio
 import os
 from typing import Dict, Any, Optional
@@ -19,6 +20,7 @@ async def _download_stream_normal(
     """普通流式下载。"""
 
     def file_path_generator(content_type: str, url: str) -> str:
+        """根据内容类型与链接生成目标文件路径。"""
         return output_path
 
     file_path, size_mb = await download_media_from_url(

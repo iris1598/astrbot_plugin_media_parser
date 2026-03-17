@@ -1,3 +1,4 @@
+"""下载管理器，按媒体类型分发下载任务并回填元数据。"""
 import asyncio
 import hashlib
 import re
@@ -18,6 +19,7 @@ from ..constants import Config
 
 class DownloadManager:
 
+    """下载调度器，协调不同处理器完成媒体下载。"""
     def __init__(
         self,
         max_video_size_mb: float = 0.0,
@@ -435,6 +437,7 @@ class DownloadManager:
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def download_one(item: Dict[str, Any]) -> Dict[str, Any]:
+            """下载单条媒体并返回包含本地路径的处理结果。"""
             async with semaphore:
                 try:
                     url_list = item.get('url_list', [])
@@ -603,6 +606,7 @@ class DownloadManager:
         video_sizes: List[Optional[float]],
         proxy_addr: str = None
     ) -> Dict[str, Any]:
+        """使用预下载策略处理媒体并补齐回传字段。"""
         url = metadata.get('url', '')
         video_force_download = metadata.get('video_force_download', False)
         video_count = len(video_urls)
@@ -702,6 +706,7 @@ class DownloadManager:
         proxy_addr: str = None,
         initial_video_has_access_denied: bool = False
     ) -> Dict[str, Any]:
+        """使用直链策略处理媒体并补齐回传字段。"""
         url = metadata.get('url', '')
         video_force_download = metadata.get('video_force_download', False)
         video_count = len(video_urls)

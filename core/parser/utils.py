@@ -1,9 +1,11 @@
-from __future__ import annotations
+"""core.parser.utils 模块。"""
 
+from __future__ import annotations
 from urllib.parse import parse_qs, unquote, urlparse
 
 
 class SkipParse(Exception):
+    "SkipParse 类。"
     pass
 
 

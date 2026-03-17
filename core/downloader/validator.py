@@ -1,3 +1,4 @@
+"""下载前校验逻辑，确保元数据与链接可用。"""
 import asyncio
 from typing import Optional, Tuple
 

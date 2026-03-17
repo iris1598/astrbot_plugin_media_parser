@@ -1,3 +1,4 @@
+"""Twitter/X 解析器实现。"""
 import asyncio
 import re
 from datetime import datetime
@@ -14,6 +15,7 @@ from ...constants import Config
 
 class TwitterParser(BaseVideoParser):
 
+    """Twitter/X 解析器实现。"""
     def __init__(
         self,
         use_parse_proxy: bool = False,

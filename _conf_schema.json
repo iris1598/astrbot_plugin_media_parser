@@ -99,8 +99,36 @@
             "enable_text_metadata": {
                 "description": "是否发送文本类型元数据",
                 "type": "bool",
-                "hint": "是否以文本格式发送解析出的标题、作者、简介等元数据",
+                "hint": "是否以文本格式发送解析出的标题、作者、简介、热评等元数据",
                 "default": true
+            },
+            "hot_comment_settings": {
+                "description": "热评获取",
+                "type": "object",
+                "hint": "需先启用发送文本类型元数据",
+                "items": {
+                    "hot_comment_count": {
+                        "description": "热评条数",
+                        "type": "int",
+                        "hint": "获取的热评数量，设置为0表示不解析",
+                        "default": 0
+                    },
+                    "enable_bilibili": {
+                        "description": "B站",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "enable_weibo": {
+                        "description": "微博",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "enable_xiaohongshu": {
+                        "description": "小红书",
+                        "type": "bool",
+                        "default": true
+                    }
+                }
             }
         }
     },

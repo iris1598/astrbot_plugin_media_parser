@@ -1,3 +1,4 @@
+"""消息节点构建器，将解析结果转换为可发送消息节点。"""
 import os
 from typing import Dict, Any, List, Optional, Tuple, Union
 
@@ -87,6 +88,28 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
                 )
         except (TypeError, ValueError):
             pass
+
+    hot_comments = metadata.get("hot_comments", [])
+    if isinstance(hot_comments, list) and hot_comments:
+        text_parts.append(f"热评（{len(hot_comments)}条）:")
+        total = len(hot_comments)
+        for idx, item in enumerate(hot_comments, start=1):
+            if not isinstance(item, dict):
+                continue
+            username = str(item.get("username", "") or "").strip() or "未知用户"
+            uid = str(item.get("uid", "") or "").strip()
+            try:
+                likes = int(item.get("likes", 0) or 0)
+            except (TypeError, ValueError):
+                likes = 0
+            time_text = str(item.get("time", "") or "").strip() or "-"
+            message = str(item.get("message", "") or "").strip() or "（无文本内容）"
+            user_label = f"{username}(uid:{uid})" if uid else username
+            text_parts.append(f"[{idx}] {user_label}")
+            text_parts.append(f"点赞: {likes} | 时间: {time_text}")
+            text_parts.append(message)
+            if idx < total:
+                text_parts.append("")
     
     if metadata.get('error'):
         text_parts.append(f"解析失败：{metadata['error']}")

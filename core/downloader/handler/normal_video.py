@@ -1,3 +1,4 @@
+"""普通视频直链下载处理器。"""
 import asyncio
 import os
 from typing import Dict, Any, List, Optional, Tuple
@@ -91,6 +92,7 @@ async def batch_download_videos(
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def download_one(item: Dict[str, Any]) -> Dict[str, Any]:
+        """下载单条普通视频并返回处理后的元数据。"""
         async with semaphore:
             try:
                 url_list = item.get('url_list', [])

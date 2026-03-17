@@ -1,3 +1,4 @@
+"""配置管理模块，负责默认值处理、类型转换与配置兜底。"""
 import os
 import tempfile
 from typing import List
@@ -31,6 +32,7 @@ BILIBILI_QUALITY_MAP = {
 
 class ConfigManager:
 
+    """配置读取门面，向业务层提供类型安全的配置访问。"""
     def __init__(self, config: dict):
         """初始化配置管理器
 
@@ -83,6 +85,24 @@ class ConfigManager:
             "流媒体解析bot为您服务 ٩( 'ω' )و"
         )
         self.enable_text_metadata = text_settings.get("enable_text_metadata", True)
+        hot_comment_settings = text_settings.get("hot_comment_settings", {})
+        if not isinstance(hot_comment_settings, dict):
+            hot_comment_settings = {}
+        self.hot_comment_count = self._parse_non_negative_int(
+            hot_comment_settings.get("hot_comment_count", 0),
+            0
+        )
+        self.hot_comment_bilibili = bool(
+            hot_comment_settings.get("enable_bilibili", True)
+        )
+        self.hot_comment_weibo = bool(
+            hot_comment_settings.get("enable_weibo", True)
+        )
+        self.hot_comment_xiaohongshu = bool(
+            hot_comment_settings.get("enable_xiaohongshu", True)
+        )
+        if not self.enable_text_metadata:
+            self.hot_comment_count = 0
         
         video_size_settings = self._config.get("video_size_settings", {})
         self.max_video_size_mb = video_size_settings.get("max_video_size_mb", 0.0)
@@ -248,13 +268,23 @@ class ConfigManager:
 
     @staticmethod
     def _parse_positive_int(value, default: int) -> int:
+        """将配置值解析为正整数，非法值回退为默认值。"""
         try:
             return max(1, int(value))
         except (TypeError, ValueError):
             return max(1, int(default))
 
     @staticmethod
+    def _parse_non_negative_int(value, default: int) -> int:
+        """将配置值解析为非负整数，非法值回退为默认值。"""
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return max(0, int(default))
+
+    @staticmethod
     def _normalize_id_list(values) -> List[str]:
+        """将管理员或白名单配置规范化为字符串 ID 集合。"""
         if not isinstance(values, list):
             return []
         normalized: List[str] = []
@@ -269,6 +299,14 @@ class ConfigManager:
             normalized.append(value_str)
         return normalized
 
+    def _effective_hot_comment_count(self, enabled: bool) -> int:
+        """根据开关状态返回实际生效的热评条数。"""
+        if not self.enable_text_metadata:
+            return 0
+        if not enabled:
+            return 0
+        return self.hot_comment_count
+
     def create_parsers(self) -> List:
         """创建解析器列表
 
@@ -279,6 +317,15 @@ class ConfigManager:
             ValueError: 没有启用任何解析器时
         """
         parsers = []
+        bilibili_hot_comment_count = self._effective_hot_comment_count(
+            self.hot_comment_bilibili
+        )
+        weibo_hot_comment_count = self._effective_hot_comment_count(
+            self.hot_comment_weibo
+        )
+        xiaohongshu_hot_comment_count = self._effective_hot_comment_count(
+            self.hot_comment_xiaohongshu
+        )
         
         if self.enable_bilibili:
             self.bilibili_parser = BilibiliParser(
@@ -288,7 +335,8 @@ class ConfigManager:
                 admin_assist_enabled=self.bilibili_enable_admin_assist_on_expire,
                 admin_reply_timeout_minutes=self.bilibili_admin_reply_timeout_minutes,
                 admin_request_cooldown_minutes=self.bilibili_admin_request_cooldown_minutes,
-                credential_path=self.bilibili_cookie_runtime_file
+                credential_path=self.bilibili_cookie_runtime_file,
+                hot_comment_count=bilibili_hot_comment_count
             )
             parsers.append(self.bilibili_parser)
         if self.enable_douyin:
@@ -296,9 +344,15 @@ class ConfigManager:
         if self.enable_kuaishou:
             parsers.append(KuaishouParser())
         if self.enable_weibo:
-            parsers.append(WeiboParser())
+            parsers.append(
+                WeiboParser(hot_comment_count=weibo_hot_comment_count)
+            )
         if self.enable_xiaohongshu:
-            parsers.append(XiaohongshuParser())
+            parsers.append(
+                XiaohongshuParser(
+                    hot_comment_count=xiaohongshu_hot_comment_count
+                )
+            )
         if self.enable_xiaoheihe:
             parsers.append(XiaoheiheParser(
                 use_video_proxy=self.xiaoheihe_use_video_proxy,

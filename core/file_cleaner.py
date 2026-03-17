@@ -1,3 +1,4 @@
+"""文件清理工具，负责临时文件与空目录回收。"""
 import os
 import shutil
 from typing import List, Optional

@@ -1,3 +1,4 @@
+"""消息发送封装，统一不同会话场景下的发送行为。"""
 from typing import Any, List
 
 from astrbot.api.event import AstrMessageEvent
@@ -10,6 +11,7 @@ from ..logger import logger
 
 class MessageSender:
 
+    """消息发送器，封装统一的私聊/群聊发送接口。"""
     def __init__(self):
         """初始化消息发送器
 

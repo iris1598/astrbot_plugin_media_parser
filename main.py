@@ -1,3 +1,4 @@
+"main 模块。"
 import asyncio
 import json
 from typing import Any, Dict, Optional
@@ -24,10 +25,11 @@ from .core.interaction.platform.bilibili import BilibiliAdminCookieAssistManager
     "astrbot_plugin_media_parser",
     "drdon1234",
     "聚合解析流媒体平台链接，转换为媒体直链发送",
-    "5.0.1"
+    "5.1.0"
 )
 class VideoParserPlugin(Star):
 
+    "VideoParserPlugin 类。"
     def __init__(self, context: Context, config: dict):
         """初始化插件"""
         super().__init__(context)
@@ -73,6 +75,7 @@ class VideoParserPlugin(Star):
             cleanup_directory(self.download_manager.cache_dir)
 
     def _trigger_bilibili_cookie_assist_if_needed(self):
+        "处理trigger bilibili cookie assist if needed逻辑。"
         if not self.bilibili_parser:
             return
         reason = self.bilibili_parser.consume_assist_request()
@@ -236,6 +239,7 @@ class VideoParserPlugin(Star):
                     )
             
             async def process_single_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+                """异步处理单条元数据的下载与异常收敛。"""
                 if metadata.get('error'):
                     return metadata
                 

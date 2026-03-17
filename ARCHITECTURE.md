@@ -298,6 +298,7 @@ parser::manager::ParserManager.parse_text()
   ↓
 返回元数据列表
   ├─ url: 原始链接
+  ├─ source_url: 原始来源链接（可选，如短链展开前的地址）
   ├─ title: 标题
   ├─ author: 作者
   ├─ desc: 描述（可选）
@@ -308,9 +309,26 @@ parser::manager::ParserManager.parse_text()
   ├─ video_headers: 视频请求头
   ├─ image_headers: 图片请求头
   ├─ video_force_download: 是否强制下载
+  ├─ access_status: 访问状态（如 "full"、"preview" 等，B站会员/付费限制）
+  ├─ restriction_type: 限制类型（可选）
+  ├─ restriction_label: 限制标签（可选）
+  ├─ can_access_full_video: 是否可访问完整视频
+  ├─ is_preview_only: 是否仅有预览片段
+  ├─ access_message: 访问信息描述（如时长受限说明）
+  ├─ timelength_ms: 视频总时长（毫秒）
+  ├─ available_length_ms: 当前可访问时长（毫秒）
+  ├─ hot_comments: 热评列表（可选，List[Dict]，包含 username/uid/likes/time/message）
   ├─ use_image_proxy: 图片是否使用代理（Twitter等平台）
   ├─ use_video_proxy: 视频是否使用代理（Twitter、小黑盒等平台）
   └─ proxy_url: 代理地址（可选，平台特定）
+  ↓
+触发B站Cookie协助检查
+  └─ _trigger_bilibili_cookie_assist_if_needed()
+  ↓
+检查有效元数据
+  └─ 至少存在一条非 error 的元数据包含 video_urls、image_urls 或 access_message
+  ↓
+发送开场语（若 enable_opening_msg 启用）
 ```
 
 #### 2.2.4 元数据处理阶段
@@ -359,14 +377,17 @@ downloader::manager::DownloadManager.process_metadata()
 ```
 main.py::VideoParserPlugin.auto_parse()
   ↓
-message_adapter::node_builder::build_all_nodes()
+message_adapter::node_builder::build_all_nodes(enable_text_metadata)
   ├─ 遍历所有元数据
   │   └─ message_adapter::node_builder::build_nodes_for_link()
-  │       ├─ 构建文本节点
+  │       ├─ 构建文本节点（受 enable_text_metadata 控制）
   │       │   └─ message_adapter::node_builder::build_text_node()
-  │       │       ├─ 标题、作者、描述
+  │       │       ├─ 标题、作者、描述、发布时间
   │       │       ├─ 视频大小信息
-  │       │       ├─ 错误信息
+  │       │       ├─ 时长/访问状态（access_message、is_preview_only、timelength_ms、available_length_ms）
+  │       │       ├─ 热评展示（hot_comments）
+  │       │       ├─ 错误信息（解析失败、403被拒、直链无效媒体、超大小限制）
+  │       │       ├─ 下载失败统计（failed_video_count、failed_image_count）
   │       │       └─ 原始链接
   │       │
   │       └─ 构建媒体节点
@@ -438,6 +459,9 @@ file_cleaner::cleanup_files()
 
 ```
 main.py::VideoParserPlugin.terminate()
+  ↓
+interaction::BilibiliAdminCookieAssistManager.shutdown()
+  └─ 关闭管理员交互会话
   ↓
 downloader::manager::DownloadManager.shutdown()
   ├─ 设置 _shutting_down 标志
@@ -525,12 +549,16 @@ file_cleaner::cleanup_directory()
 链接提取 → (链接, 解析器) 列表
   ↓
 解析结果 → 元数据字典
-  ├─ url
-  ├─ title, author, desc
+  ├─ url, source_url
+  ├─ title, author, desc, timestamp
   ├─ video_urls: List[List[str]]
   ├─ image_urls: List[List[str]]
   ├─ video_headers, image_headers
-  └─ video_force_download
+  ├─ video_force_download
+  ├─ access_status, restriction_type, restriction_label
+  ├─ can_access_full_video, is_preview_only, access_message
+  ├─ timelength_ms, available_length_ms
+  └─ hot_comments: List[Dict]
   ↓
 下载处理 → 增强元数据
   ├─ file_paths: List[str]（本地文件路径列表）

@@ -454,7 +454,7 @@ class KuaishouParser(BaseVideoParser):
         新版快手分享页(gifshow.com/chenzhongtech.com) 的数据结构：
         INIT_STATE 的某个 value 包含 { photo: {...}, single: {...} }
         - photo.mainMvUrls: 视频 CDN URL 列表
-        - photo.coverUrls: 封面/图片 URL 列表
+        - photo.coverUrls: 封面候选 URL 列表
         - photo.type: 1=图集, 其他=视频
         - single.cdnList: 图集 CDN 列表
         - single.music: 图集背景音乐路径
@@ -502,6 +502,22 @@ class KuaishouParser(BaseVideoParser):
             video_url = self._min_mp4(video_urls[0])
             return {'type': 'video', 'video_url': video_url, 'photo': photo_data}
 
+        ext_params = photo_data.get('ext_params')
+        if isinstance(ext_params, str):
+            try:
+                ext_params = json.loads(ext_params)
+            except (json.JSONDecodeError, ValueError):
+                ext_params = None
+
+        atlas_data = None
+        if isinstance(ext_params, dict):
+            atlas_data = ext_params.get('atlas')
+            if isinstance(atlas_data, str):
+                try:
+                    atlas_data = json.loads(atlas_data)
+                except (json.JSONDecodeError, ValueError):
+                    atlas_data = None
+
         cover_urls = photo_data.get('coverUrls') or []
         cover_url_list = [
             item.get('url') for item in cover_urls
@@ -518,6 +534,33 @@ class KuaishouParser(BaseVideoParser):
         else:
             cdns = []
             music_path = None
+
+        if photo_data.get('type') == 1 and isinstance(atlas_data, dict):
+            atlas_cdn_list = atlas_data.get('cdnList') or []
+            atlas_cdns = [
+                item.get('cdn') for item in atlas_cdn_list
+                if isinstance(item, dict) and item.get('cdn')
+            ]
+            if not atlas_cdns:
+                atlas_cdn_raw = atlas_data.get('cdn') or []
+                if isinstance(atlas_cdn_raw, str):
+                    atlas_cdns = [atlas_cdn_raw]
+                elif isinstance(atlas_cdn_raw, list):
+                    atlas_cdns = [
+                        item for item in atlas_cdn_raw
+                        if isinstance(item, str) and item
+                    ]
+            atlas_music = atlas_data.get('music') or music_path
+            atlas_list = atlas_data.get('list') or []
+            if isinstance(atlas_list, str):
+                atlas_list = [atlas_list]
+            album = self._build_album(atlas_cdns, atlas_music, atlas_list)
+            if album:
+                album['photo'] = photo_data
+                return album
+
+        if photo_data.get('type') == 1:
+            return None
 
         if cover_url_list:
             image_url_lists = [cover_url_list]

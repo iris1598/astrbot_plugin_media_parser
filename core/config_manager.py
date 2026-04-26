@@ -1,6 +1,5 @@
 """配置管理模块，负责默认值处理、类型转换与配置兜底。"""
 import os
-import tempfile
 from dataclasses import dataclass, field
 from typing import Any, List
 
@@ -31,6 +30,41 @@ BILIBILI_QUALITY_MAP = {
 }
 
 
+def _is_docker_environment() -> bool:
+    """判断当前是否运行在 Docker 容器内。"""
+    return os.path.exists("/.dockerenv")
+
+
+def _get_astrbot_plugin_cache_dir() -> str:
+    """获取默认媒体缓存目录；本地调试时回退到项目 cache 目录。"""
+    try:
+        from astrbot.core import astrbot_config
+        data_dir = str(astrbot_config.get("data_dir") or "").strip()
+        if data_dir:
+            prefix = os.path.join(
+                data_dir,
+                "plugin_data",
+                Config.PLUGIN_NAME,
+            )
+            return Config.build_cache_dir(prefix)
+    except Exception:
+        pass
+
+    try:
+        from astrbot.core.utils.io import get_astrbot_data_path
+        prefix = os.path.join(
+            get_astrbot_data_path(),
+            "plugin_data",
+            Config.PLUGIN_NAME,
+        )
+        return Config.build_cache_dir(prefix)
+    except Exception:
+        pass
+
+    prefix = os.getcwd()
+    return Config.build_cache_dir(prefix)
+
+
 # ── 配置分组 dataclass ──────────────────────────────────
 
 
@@ -58,10 +92,15 @@ class MessageConfig:
     opening_enabled: bool = True
     opening_content: str = "流媒体解析bot为您服务 ٩( 'ω' )و"
     text_metadata: bool = True
+    rich_media: bool = True
     hot_comment_count: int = 0
     hot_comment_bilibili: bool = True
     hot_comment_weibo: bool = True
     hot_comment_xiaohongshu: bool = True
+
+    def has_any_output(self) -> bool:
+        """文本元数据或富媒体至少有一种输出开启。"""
+        return bool(self.text_metadata or self.rich_media)
 
 
 @dataclass
@@ -103,7 +142,7 @@ class DownloadConfig:
     max_video_size_mb: float = 1000.0
     large_video_threshold_mb: float = Config.DEFAULT_LARGE_VIDEO_THRESHOLD_MB
     cache_dir: str = ""
-    pre_download_all_media: bool = False
+    cache_dir_available: bool = False
     max_concurrent_downloads: int = Config.DOWNLOAD_MANAGER_MAX_CONCURRENT
 
 
@@ -114,6 +153,7 @@ class ProxyConfig:
     twitter_use_parse_proxy: bool = False
     twitter_use_image_proxy: bool = True
     twitter_use_video_proxy: bool = True
+    tiktok_use_proxy: bool = False
 
 
 @dataclass
@@ -183,6 +223,7 @@ class ConfigManager:
             hot_comments = {}
 
         text_metadata_enabled = message_raw.get("text_metadata", True)
+        rich_media_enabled = message_raw.get("rich_media", True)
         hot_count = self._parse_non_negative_int(
             hot_comments.get("count", 0), 0
         )
@@ -196,6 +237,7 @@ class ConfigManager:
                 "content", "流媒体解析bot为您服务 ٩( 'ω' )و"
             ),
             text_metadata=text_metadata_enabled,
+            rich_media=rich_media_enabled,
             hot_comment_count=hot_count,
             hot_comment_bilibili=bool(hot_comments.get("bilibili", True)),
             hot_comment_weibo=bool(hot_comments.get("weibo", True)),
@@ -203,6 +245,10 @@ class ConfigManager:
                 hot_comments.get("xiaohongshu", True)
             ),
         )
+        if not self.message.has_any_output():
+            logger.warning(
+                "文本元数据与富媒体输出均已关闭，插件将不会触发解析。"
+            )
 
         # --- permissions ---
         permissions_raw = self._config.get("permissions", {})
@@ -248,23 +294,12 @@ class ConfigManager:
                 Config.MAX_LARGE_VIDEO_THRESHOLD_MB
             )
 
-        configured_cache_dir = str(
-            download_raw.get("cache_dir", "") or ""
-        ).strip()
-        if (
-            not configured_cache_dir
-            or configured_cache_dir == Config.DEFAULT_CACHE_DIR
-        ):
-            if os.path.exists('/.dockerenv'):
-                cache_dir = Config.DEFAULT_CACHE_DIR
-            else:
-                cache_dir = os.path.join(
-                    tempfile.gettempdir(), "astrbot_media_parser_cache"
-                )
+        configured_cache_dir = str(download_raw.get("cache_dir", "") or "").strip()
+        if _is_docker_environment():
+            cache_dir = configured_cache_dir or Config.DEFAULT_CACHE_DIR
         else:
-            cache_dir = configured_cache_dir
+            cache_dir = _get_astrbot_plugin_cache_dir()
 
-        pre_download = download_raw.get("pre_download", False)
         max_concurrent = min(
             self._parse_positive_int(
                 download_raw.get(
@@ -289,30 +324,18 @@ class ConfigManager:
             ),
         )
 
-        if self.relay.enabled:
-            cache_dir = os.path.join(
-                tempfile.gettempdir(),
-                "astrbot_media_parser_relay_cache"
+        cache_dir_available = check_cache_dir_available(cache_dir)
+        if not cache_dir_available:
+            logger.warning(
+                f"媒体文件缓存目录不可用: {cache_dir}，"
+                "视频将尽量使用直链发送，图片和必须写入缓存的媒体会被跳过。"
             )
-            pre_download = True
-            logger.info(
-                f"媒体中转模式已启用，缓存目录: {cache_dir}，"
-                f"预下载已强制开启"
-            )
-
-        if pre_download:
-            if not check_cache_dir_available(cache_dir):
-                logger.warning(
-                    f"预下载模式已启用，但缓存目录不可用: {cache_dir}，"
-                    f"将自动降级为禁用预下载模式"
-                )
-                pre_download = False
 
         self.download = DownloadConfig(
             max_video_size_mb=max_video_size_mb,
             large_video_threshold_mb=large_video_threshold_mb,
             cache_dir=cache_dir,
-            pre_download_all_media=pre_download,
+            cache_dir_available=cache_dir_available,
             max_concurrent_downloads=max_concurrent,
         )
 
@@ -348,31 +371,24 @@ class ConfigManager:
             admin_request_cooldown = 1440
 
         cookie_feature_requested = use_cookie
-        cookie_runtime_enabled = bool(use_cookie and pre_download)
+        cookie_runtime_enabled = bool(use_cookie and cache_dir_available)
 
         runtime_file_name = "cookie.json"
-        core_dir = os.path.dirname(os.path.abspath(__file__))
-        cookie_dir = os.path.join(
-            core_dir, "parser", "runtime_manager", "bilibili"
-        )
+        cookie_dir = Config.build_runtime_dir(cache_dir, "bilibili")
         cookie_runtime_file = os.path.join(cookie_dir, runtime_file_name)
         if use_cookie:
             try:
                 os.makedirs(cookie_dir, exist_ok=True)
             except Exception as e:
                 logger.warning(
-                    f"B站Cookie运行时目录不可用，将回退到缓存目录保存: {e}"
+                    f"B站Cookie运行时目录不可用，将旁路Cookie能力: {e}"
                 )
-                fallback = os.path.join(
-                    cache_dir, "runtime_manager", "bilibili"
-                )
-                cookie_runtime_file = os.path.join(
-                    fallback, runtime_file_name
-                )
+                cookie_runtime_file = ""
+                cookie_runtime_enabled = False
 
         if cookie_feature_requested and not cookie_runtime_enabled:
             logger.warning(
-                '检测到已开启"是否携带Cookie解析视频"，但预下载未启用或不可用，'
+                '检测到已开启"是否携带Cookie解析视频"，但媒体文件缓存目录不可用，'
                 "将旁路B站Cookie与协助登录流程，直接使用无Cookie直链模式。"
             )
 
@@ -407,6 +423,7 @@ class ConfigManager:
             twitter_use_parse_proxy=twitter_proxy.get("parse", False),
             twitter_use_image_proxy=twitter_proxy.get("image", True),
             twitter_use_video_proxy=twitter_proxy.get("video", True),
+            tiktok_use_proxy=proxy_raw.get("tiktok", False),
         )
 
         # --- admin ---
@@ -462,7 +479,10 @@ class ConfigManager:
             )
             parsers.append(self.bilibili_parser)
         if self._enable_douyin:
-            parsers.append(DouyinParser())
+            parsers.append(DouyinParser(
+                use_tiktok_proxy=self.proxy.tiktok_use_proxy,
+                proxy_url=proxy_addr,
+            ))
         if self._enable_kuaishou:
             parsers.append(KuaishouParser())
         if self._enable_weibo:

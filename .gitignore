@@ -152,6 +152,9 @@ cython_debug/
 # 本地运行与缓存目录
 cache/
 
+# 本地测试目录
+tests/
+
 # 临时文件
 *.tmp
 *.temp

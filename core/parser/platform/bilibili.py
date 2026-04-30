@@ -74,7 +74,7 @@ def av2bv(av: int) -> str:
 
 class BilibiliParser(BaseVideoParser):
 
-    """B 站解析器，支持视频/动态解析与热评提取。"""
+    """B 站解析器，支持视频/动态/直播间/专栏/收藏夹解析与热评提取。"""
     def __init__(
         self,
         cookie_runtime_enabled: bool = False,
@@ -85,12 +85,33 @@ class BilibiliParser(BaseVideoParser):
         credential_path: str = "",
         local_debug_mode: bool = False,
         max_quality: int = 0,
-        hot_comment_count: int = 0
+        hot_comment_count: int = 0,
+        parse_live: bool = False,
+        parse_article: bool = True,
+        parse_favorite: bool = True,
     ):
-        """初始化B站解析器"""
+        """初始化B站解析器
+
+        Args:
+            cookie_runtime_enabled: 是否启用Cookie运行时
+            configured_cookie: 配置的Cookie
+            admin_assist_enabled: 是否启用管理员协助登录
+            admin_reply_timeout_minutes: 管理员回复超时分钟数
+            admin_request_cooldown_minutes: 管理员请求冷却分钟数
+            credential_path: 凭证文件路径
+            local_debug_mode: 本地调试模式
+            max_quality: 最大画质
+            hot_comment_count: 热评数量
+            parse_live: 是否解析直播间
+            parse_article: 是否解析专栏
+            parse_favorite: 是否解析收藏夹
+        """
         super().__init__("bilibili")
         self.semaphore = asyncio.Semaphore(Config.PARSER_MAX_CONCURRENT)
         self.cookie_runtime_enabled = bool(cookie_runtime_enabled)
+        self.parse_live = bool(parse_live)
+        self.parse_article = bool(parse_article)
+        self.parse_favorite = bool(parse_favorite)
         try:
             self.max_qn = max(0, int(max_quality))
         except (TypeError, ValueError):
@@ -286,6 +307,309 @@ class BilibiliParser(BaseVideoParser):
             return json.loads(match.group(1))
         except Exception:
             return {}
+
+    async def _parse_live(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        cookie_header: str = ""
+    ) -> Dict[str, Any]:
+        """解析B站直播间链接
+
+        Args:
+            url: 直播间URL
+            session: aiohttp会话
+            cookie_header: Cookie请求头
+
+        Returns:
+            直播间信息字典
+        """
+        # 提取room_id
+        room_id_match = re.search(r'/(\d+)(?:\?|$|#)', url)
+        if not room_id_match:
+            raise RuntimeError(f"无法提取直播间ID: {url}")
+        room_id = room_id_match.group(1)
+
+        api = "https://api.live.bilibili.com/live_room/v1/RoomInfo/getRoomInfo"
+        params = {"room_id": room_id}
+        headers = self._build_api_headers(
+            referer=f"https://live.bilibili.com/{room_id}",
+            cookie_header=cookie_header
+        )
+
+        async with session.get(
+            api,
+            params=params,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            j = await self._check_json_response(resp)
+
+        data = j.get("data") or {}
+        room_info = data.get("room_info") or {}
+        anchor_info = data.get("anchor_info") or {}
+        base_info = anchor_info.get("base_info") or {}
+
+        title = room_info.get("title", "")
+        cover = room_info.get("cover_url", "")
+        live_status = room_info.get("live_status", 0)
+        uname = base_info.get("uname", "")
+        uid = base_info.get("uid", "")
+        follower_num = room_info.get("attention", 0)
+        online_num = room_info.get("online", 0)
+
+        author = f"{uname}(uid:{uid})" if uid else uname
+
+        status_text = "直播中" if live_status == 1 else "未开播"
+        desc = f"状态: {status_text}"
+        if live_status == 1 and online_num:
+            desc += f" | 观看人数: {online_num}"
+        if follower_num:
+            desc += f" | 粉丝数: {follower_num}"
+
+        image_headers, _ = self._build_media_headers(
+            referer=f"https://live.bilibili.com/{room_id}",
+            origin="https://live.bilibili.com",
+            cookie_header=cookie_header
+        )
+
+        result = {
+            "url": url,
+            "title": title,
+            "author": author,
+            "desc": desc,
+            "timestamp": "",
+            "video_urls": [],
+            "image_urls": [[cover]] if cover else [],
+            "image_headers": image_headers,
+            "video_headers": image_headers,
+            "platform": "bilibili",
+            "parser_name": self.name,
+            "content_type": "live",
+            "live_status": live_status,
+            "is_live": live_status == 1,
+        }
+
+        logger.debug(f"[{self.name}] _parse_live: 解析成功 {url}, title={title}, status={status_text}")
+        return result
+
+    async def _parse_article(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        cookie_header: str = ""
+    ) -> Dict[str, Any]:
+        """解析B站专栏/笔记链接
+
+        Args:
+            url: 专栏URL
+            session: aiohttp会话
+            cookie_header: Cookie请求头
+
+        Returns:
+            专栏信息字典
+        """
+        # 提取专栏ID
+        article_id_match = re.search(r'(?:read/cv|read/)(cv\d+|\d+)', url)
+        if not article_id_match:
+            raise RuntimeError(f"无法提取专栏ID: {url}")
+        article_id = article_id_match.group(1).replace("cv", "")
+
+        api = f"https://api.bilibili.com/x/article/detail?id={article_id}"
+        headers = self._build_api_headers(
+            referer=f"https://www.bilibili.com/read/cv{article_id}",
+            cookie_header=cookie_header
+        )
+
+        async with session.get(
+            api,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            j = await self._check_json_response(resp)
+
+        await self._handle_api_response(j, "article detail")
+        data = j.get("data") or {}
+        article_data = data.get("article") or {}
+
+        title = article_data.get("title", "")
+        desc = article_data.get("summary", "")
+        author = article_data.get("author_name", "")
+        author_mid = article_data.get("mid", "")
+
+        if author and author_mid:
+            author = f"{author}(uid:{author_mid})"
+
+        publish_time = ""
+        pub_time = article_data.get("publish_time")
+        if pub_time:
+            try:
+                dt = datetime.fromtimestamp(int(pub_time))
+                publish_time = dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+        # 提取图片
+        image_urls = []
+        content = article_data.get("content", "")
+        if content:
+            img_matches = re.findall(r'src="(https?://[^"]+\.(?:jpg|jpeg|png|gif|webp))"', content)
+            for img_url in img_matches[:20]:  # 限制最多20张图片
+                if img_url and "data:image" not in img_url:
+                    image_urls.append([img_url])
+
+        image_headers, _ = self._build_media_headers(
+            referer=f"https://www.bilibili.com/read/cv{article_id}",
+            origin="https://www.bilibili.com",
+            cookie_header=cookie_header
+        )
+
+        result = {
+            "url": url,
+            "title": title,
+            "author": author,
+            "desc": desc,
+            "timestamp": publish_time,
+            "video_urls": [],
+            "image_urls": image_urls,
+            "image_headers": image_headers,
+            "video_headers": image_headers,
+            "platform": "bilibili",
+            "parser_name": self.name,
+            "content_type": "article",
+        }
+
+        logger.debug(f"[{self.name}] _parse_article: 解析成功 {url}, title={title}")
+        return result
+
+    async def _parse_favorite(
+        self,
+        url: str,
+        session: aiohttp.ClientSession,
+        cookie_header: str = ""
+    ) -> Dict[str, Any]:
+        """解析B站收藏夹链接
+
+        Args:
+            url: 收藏夹URL
+            session: aiohttp会话
+            cookie_header: Cookie请求头
+
+        Returns:
+            收藏夹信息字典（包含前10个视频）
+        """
+        # 提取收藏夹ID
+        fav_id_match = re.search(r'favlist\?fid=(\d+)', url)
+        if not fav_id_match:
+            raise RuntimeError(f"无法提取收藏夹ID: {url}")
+        fav_id = fav_id_match.group(1)
+
+        # 提取用户ID（用于构建作者信息）
+        user_id_match = re.search(r'space\.bilibili\.com/(\d+)', url)
+        user_id = user_id_match.group(1) if user_id_match else ""
+
+        api = f"https://api.bilibili.com/x/v3/fav/detail?media_id={fav_id}"
+        headers = self._build_api_headers(
+            referer=f"https://space.bilibili.com/{user_id}/favlist?fid={fav_id}",
+            cookie_header=cookie_header
+        )
+
+        async with session.get(
+            api,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            j = await self._check_json_response(resp)
+
+        await self._handle_api_response(j, "favorite detail")
+        data = j.get("data") or {}
+        info = data.get("info") or {}
+
+        title = info.get("title", "收藏夹")
+        desc = info.get("intro", "")
+        media_count = info.get("media_count", 0)
+        owner = info.get("upper") or {}
+        owner_name = owner.get("name", "")
+        owner_mid = owner.get("mid", "")
+
+        author = f"{owner_name}(uid:{owner_mid})" if owner_mid else owner_name
+
+        # 获取收藏夹内的视频列表
+        video_api = f"https://api.bilibili.com/x/v3/fav/resource/list?media_id={fav_id}&pn=1&ps=10"
+        video_headers = self._build_api_headers(cookie_header=cookie_header)
+
+        image_urls = []
+        video_info_list = []
+
+        try:
+            async with session.get(
+                video_api,
+                headers=video_headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                video_j = await self._check_json_response(resp)
+
+            if video_j.get("code") == 0:
+                video_data = video_j.get("data") or {}
+                video_list = video_data.get("medias") or []
+
+                for video in video_list[:10]:
+                    v_title = video.get("title", "")
+                    v_cover = video.get("cover", "")
+                    v_bvid = video.get("bvid", "")
+                    v_duration = video.get("duration", 0)
+
+                    if v_cover:
+                        image_urls.append([v_cover])
+
+                    video_info_list.append({
+                        "title": v_title,
+                        "bvid": v_bvid,
+                        "url": f"https://www.bilibili.com/video/{v_bvid}" if v_bvid else "",
+                        "duration": v_duration,
+                    })
+        except Exception as e:
+            logger.debug(f"[{self.name}] _parse_favorite: 获取视频列表失败: {e}")
+
+        duration_text = f"共 {media_count} 个内容" if media_count else ""
+        if video_info_list:
+            duration_text += f"，显示前 {len(video_info_list)} 个"
+
+        image_headers, _ = self._build_media_headers(
+            referer=url,
+            origin="https://www.bilibili.com",
+            cookie_header=cookie_header
+        )
+
+        # 构建摘要信息
+        video_summary = ""
+        if video_info_list:
+            video_summary = "\n收藏内容：\n"
+            for idx, v in enumerate(video_info_list, 1):
+                duration_min = v["duration"] // 60
+                duration_sec = v["duration"] % 60
+                video_summary += f"  {idx}. [{duration_min:02d}:{duration_sec:02d}] {v['title']}\n"
+                if v["url"]:
+                    video_summary += f"     {v['url']}\n"
+
+        result = {
+            "url": url,
+            "title": title,
+            "author": author,
+            "desc": desc + video_summary if video_summary else desc,
+            "timestamp": duration_text,
+            "video_urls": [],
+            "image_urls": image_urls[:5],  # 只显示前5张封面
+            "image_headers": image_headers,
+            "video_headers": image_headers,
+            "platform": "bilibili",
+            "parser_name": self.name,
+            "content_type": "favorite",
+            "media_count": media_count,
+        }
+
+        logger.debug(f"[{self.name}] _parse_favorite: 解析成功 {url}, title={title}, count={media_count}")
+        return result
 
     async def _resolve_opus_comment_subject(
         self,
@@ -510,12 +834,24 @@ class BilibiliParser(BaseVideoParser):
             logger.debug(f"[{self.name}] can_parse: URL为空")
             return False
         url_lower = url.lower()
-        if 'live.bilibili.com' in url_lower:
-            logger.debug(f"[{self.name}] can_parse: 跳过直播链接 {url}")
-            return False
         if 'space.bilibili.com' in url_lower:
             logger.debug(f"[{self.name}] can_parse: 跳过空间链接 {url}")
             return False
+
+        # 直播间链接
+        if 'live.bilibili.com' in url_lower:
+            logger.debug(f"[{self.name}] can_parse: 匹配直播间链接 {url}")
+            return True
+
+        # 专栏链接
+        if '/read/' in url_lower or 'read/cv' in url_lower:
+            logger.debug(f"[{self.name}] can_parse: 匹配专栏链接 {url}")
+            return True
+
+        # 收藏夹链接
+        if '/favlist' in url_lower:
+            logger.debug(f"[{self.name}] can_parse: 匹配收藏夹链接 {url}")
+            return True
 
         if '/opus/' in url_lower:
             logger.debug(f"[{self.name}] can_parse: 匹配动态链接 {url}")
@@ -526,6 +862,10 @@ class BilibiliParser(BaseVideoParser):
 
         if B23_HOST in urlparse(url).netloc.lower():
             logger.debug(f"[{self.name}] can_parse: 匹配b23短链 {url}")
+            return True
+
+        if 'bili2233.cn' in urlparse(url).netloc.lower():
+            logger.debug(f"[{self.name}] can_parse: 匹配bili2233短链 {url}")
             return True
 
         if BV_RE.search(url):
@@ -556,13 +896,42 @@ class BilibiliParser(BaseVideoParser):
         """
         result_links_set = set()
         seen_ids = set()
-        
+
         b23_pattern = r'https?://[Bb]23\.tv/[^\s<>"\'()]+'
         b23_links = re.findall(b23_pattern, text, re.IGNORECASE)
         result_links_set.update(b23_links)
-        
+
+        # bili2233短链
+        bili2233_pattern = r'https?://[Bb]ili2233\.cn/[^\s<>"\'()]+'
+        bili2233_links = re.findall(bili2233_pattern, text, re.IGNORECASE)
+        result_links_set.update(bili2233_links)
+
         bilibili_domains = r'(?:www|m|mobile)\.bilibili\.com'
-        
+
+        # 直播间链接
+        live_pattern = r'https?://live\.bilibili\.com/\d+[^\s<>"\'()]*'
+        live_matches = re.findall(live_pattern, text, re.IGNORECASE)
+        for link in live_matches:
+            if link not in seen_ids:
+                seen_ids.add(link)
+                result_links_set.add(link)
+
+        # 专栏链接
+        read_pattern = r'https?://(?:www\.)?bilibili\.com/(?:read/[^\s<>"\'()]+|read/cv\d+)'
+        read_matches = re.findall(read_pattern, text, re.IGNORECASE)
+        for link in read_matches:
+            if link not in seen_ids:
+                seen_ids.add(link)
+                result_links_set.add(link)
+
+        # 收藏夹链接
+        favlist_pattern = r'https?://(?:space\.)?bilibili\.com/\d+/favlist[^\s<>"\'()]*'
+        favlist_matches = re.findall(favlist_pattern, text, re.IGNORECASE)
+        for link in favlist_matches:
+            if link not in seen_ids:
+                seen_ids.add(link)
+                result_links_set.add(link)
+
         bv_url_pattern = (
             rf'https?://{bilibili_domains}/video/'
             rf'([Bb][Vv][0-9A-Za-z]{{10,}})[^\s<>"\'()]*'
@@ -697,7 +1066,7 @@ class BilibiliParser(BaseVideoParser):
         url: str,
         session: aiohttp.ClientSession
     ) -> str:
-        """展开b23短链
+        """展开b23/bili2233短链
 
         Args:
             url: 原始URL
@@ -706,7 +1075,9 @@ class BilibiliParser(BaseVideoParser):
         Returns:
             展开后的URL，如果展开失败返回原URL
         """
-        if urlparse(url).netloc.lower() == B23_HOST:
+        netloc = urlparse(url).netloc.lower()
+        short_hosts = [B23_HOST, 'bili2233.cn']
+        if netloc in short_hosts:
             headers = {
                 "User-Agent": UA,
                 "Referer": "https://www.bilibili.com",
@@ -2104,6 +2475,31 @@ class BilibiliParser(BaseVideoParser):
             raise SkipParse("直播域名链接不解析")
 
         page_url_lower = page_url.lower()
+
+        # 直播间链接处理
+        if 'live.bilibili.com' in page_url_lower:
+            if not self.parse_live:
+                logger.debug(f"[{self.name}] parse_bilibili_minimal: 直播间解析已禁用，跳过 {url}")
+                raise SkipParse("直播间解析已禁用")
+            logger.debug(f"[{self.name}] parse_bilibili_minimal: 检测到直播间链接，使用直播间解析器")
+            return await self._parse_live(page_url, session, cookie_header)
+
+        # 专栏链接处理
+        if '/read/' in page_url_lower or 'read/cv' in page_url_lower:
+            if not self.parse_article:
+                logger.debug(f"[{self.name}] parse_bilibili_minimal: 专栏解析已禁用，跳过 {url}")
+                raise SkipParse("专栏解析已禁用")
+            logger.debug(f"[{self.name}] parse_bilibili_minimal: 检测到专栏链接，使用专栏解析器")
+            return await self._parse_article(page_url, session, cookie_header)
+
+        # 收藏夹链接处理
+        if '/favlist' in page_url_lower:
+            if not self.parse_favorite:
+                logger.debug(f"[{self.name}] parse_bilibili_minimal: 收藏夹解析已禁用，跳过 {url}")
+                raise SkipParse("收藏夹解析已禁用")
+            logger.debug(f"[{self.name}] parse_bilibili_minimal: 检测到收藏夹链接，使用收藏夹解析器")
+            return await self._parse_favorite(page_url, session, cookie_header)
+
         if '/opus/' in page_url_lower or 't.bilibili.com' in page_url_lower:
             logger.debug(f"[{self.name}] parse_bilibili_minimal: 检测到动态链接，使用动态解析器")
             return await self.parse_opus(

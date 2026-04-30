@@ -31,8 +31,14 @@ PC_UA = (
 class XiaohongshuParser(BaseVideoParser):
 
     "XiaohongshuParser 类。"
-    def __init__(self, hot_comment_count: int = 0):
-        """初始化小红书解析器"""
+    def __init__(self, hot_comment_count: int = 0, use_cookie: bool = False, cookie: str = ""):
+        """初始化小红书解析器
+
+        Args:
+            hot_comment_count: 热评数量
+            use_cookie: 是否使用Cookie
+            cookie: 小红书Cookie
+        """
         super().__init__("xiaohongshu")
         self.headers = {
             "User-Agent": ANDROID_UA,
@@ -45,6 +51,8 @@ class XiaohongshuParser(BaseVideoParser):
             self.hot_comment_count = max(0, int(hot_comment_count))
         except (TypeError, ValueError):
             self.hot_comment_count = 0
+        self.use_cookie = bool(use_cookie)
+        self.cookie = str(cookie or "").strip()
 
     def can_parse(self, url: str) -> bool:
         """判断是否可以解析此URL
@@ -179,24 +187,123 @@ class XiaohongshuParser(BaseVideoParser):
 
     def _get_headers_for_url(self, url: str) -> dict:
         """根据URL类型获取对应的请求头
-        
+
         Args:
             url: 页面URL
-            
+
         Returns:
             请求头字典
         """
+        headers = {
+            "User-Agent": PC_UA if self._is_pc_url(url) else ANDROID_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+        }
         if self._is_pc_url(url):
-            return {
-                "User-Agent": PC_UA,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Accept-Encoding": "gzip, deflate",
-                "Sec-CH-UA-Mobile": "?0",
-                "Sec-CH-UA-Platform": '"Windows"',
-            }
-        else:
-            return self.headers
+            headers["Sec-CH-UA-Mobile"] = "?0"
+            headers["Sec-CH-UA-Platform"] = '"Windows"'
+        if self.use_cookie and self.cookie:
+            headers["Cookie"] = self.cookie
+        return headers
+
+    async def _fetch_page_with_cookie_api(
+        self,
+        session: aiohttp.ClientSession,
+        note_id: str,
+        xsec_source: str = "pc_feed",
+        xsec_token: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """使用Cookie API方式获取笔记数据（需要登录）
+
+        Args:
+            session: aiohttp会话
+            note_id: 笔记ID
+            xsec_source: 来源标识
+            xsec_token: 安全令牌
+
+        Returns:
+            笔记数据字典，失败时返回None
+        """
+        if not self.use_cookie or not self.cookie:
+            return None
+
+        api_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        headers = {
+            "User-Agent": PC_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "Cookie": self.cookie,
+            "Referer": "https://www.xiaohongshu.com/",
+        }
+
+        try:
+            async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    logger.debug(f"[{self.name}] Cookie API请求失败，状态码: {response.status}")
+                    return None
+                html = await response.text()
+
+            # 提取 __INITIAL_STATE__
+            pattern = r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*</script>'
+            match = re.search(pattern, html, re.DOTALL)
+            if match:
+                json_str = match.group(1)
+                json_str = re.sub(r'\bundefined\b', 'null', json_str)
+                try:
+                    data = json.loads(json_str)
+                    note_data = (
+                        (data.get("note") or {}).get("noteDetailMap", {}).get(note_id, {}).get("note")
+                    )
+                    if note_data:
+                        return note_data
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            logger.debug(f"[{self.name}] Cookie API请求异常: {e}")
+
+        return None
+
+    def _extract_no_watermark_video_url(self, note_data: dict) -> str:
+        """提取无水印视频URL
+
+        从note_data中提取无水印视频URL。
+        小红书无水印视频URL格式：https://sns-video-bd.xhscdn.com/{originVideoKey}
+
+        Args:
+            note_data: 笔记数据字典
+
+        Returns:
+            无水印视频URL，如果无法提取则返回空字符串
+        """
+        try:
+            video_info = note_data.get("video", {})
+            if not video_info:
+                return ""
+
+            # 优先尝试无水印URL：consumer.originVideoKey
+            consumer = video_info.get("consumer", {})
+            origin_video_key = consumer.get("originVideoKey", "")
+            if origin_video_key:
+                no_watermark_url = f"https://sns-video-bd.xhscdn.com/{origin_video_key}"
+                logger.debug(f"[{self.name}] 获取到无水印视频URL: {no_watermark_url[:80]}...")
+                return no_watermark_url
+
+            # 备用：media.stream.h264.masterUrl（可能有水印）
+            media = video_info.get("media", {})
+            stream = media.get("stream", {})
+            h264 = stream.get("h264", [])
+            if h264 and isinstance(h264, list) and len(h264) > 0:
+                master_url = h264[0].get("masterUrl", "")
+                if master_url:
+                    logger.debug(f"[{self.name}] 使用备用视频URL（可能有水印）")
+                    return master_url
+
+            return ""
+        except Exception as e:
+            logger.debug(f"[{self.name}] 提取无水印视频URL失败: {e}")
+            return ""
 
     async def _fetch_page(
         self,
@@ -395,15 +502,25 @@ class XiaohongshuParser(BaseVideoParser):
         video_url = ""
         image_urls = []
 
+        # 视频URL提取逻辑
         if note_type == "video":
             video_info = note_data.get("video", {})
-            if video_info and "media" in video_info:
-                media = video_info["media"]
-                if "stream" in media:
-                    stream = media["stream"]
-                    if "h264" in stream and len(stream["h264"]) > 0:
-                        h264 = stream["h264"][0]
-                        video_url = h264.get("masterUrl", "")
+            
+            # 优先尝试无水印URL：consumer.originVideoKey
+            consumer = video_info.get("consumer", {})
+            origin_video_key = consumer.get("originVideoKey", "")
+            if origin_video_key:
+                video_url = f"https://sns-video-bd.xhscdn.com/{origin_video_key}"
+            
+            # 如果没有无水印URL，尝试media.stream.h264.masterUrl
+            if not video_url and video_info:
+                if "media" in video_info:
+                    media = video_info["media"]
+                    if "stream" in media:
+                        stream = media["stream"]
+                        if "h264" in stream and len(stream["h264"]) > 0:
+                            h264 = stream["h264"][0]
+                            video_url = h264.get("masterUrl", "")
 
             if video_url and video_url.startswith("http://"):
                 video_url = video_url.replace("http://", "https://", 1)
@@ -613,11 +730,11 @@ class XiaohongshuParser(BaseVideoParser):
         url: str
     ) -> Optional[Dict[str, Any]]:
         """解析单个小红书链接
-        
+
         Args:
             session: aiohttp会话
             url: 小红书链接
-            
+
         Returns:
             解析结果字典，包含标准化的元数据格式：
             - url: 原始URL
@@ -629,7 +746,7 @@ class XiaohongshuParser(BaseVideoParser):
             - image_urls: 图片URL列表（图集类型）
             - image_headers: 图片请求头
             - video_headers: 视频请求头
-            
+
         Raises:
             RuntimeError: 当解析失败时
         """
@@ -649,10 +766,106 @@ class XiaohongshuParser(BaseVideoParser):
 
             full_url = self._clean_share_url(full_url)
 
+            # 提取笔记ID用于Cookie方式解析
+            note_id = None
+            note_id_match = re.search(r'/explore/(\w+)', full_url)
+            if not note_id_match:
+                note_id_match = re.search(r'/discovery/item/(\w+)', full_url)
+            if note_id_match:
+                note_id = note_id_match.group(1)
+
+            # 提取xsec_token参数
+            xsec_source = "pc_feed"
+            xsec_token = ""
+            try:
+                from urllib.parse import parse_qs
+                parsed = urlparse(full_url)
+                params = parse_qs(parsed.query)
+                xsec_source = params.get('xsec_source', ['pc_feed'])[0] or "pc_feed"
+                xsec_token = params.get('xsec_token', [''])[0] or ""
+            except Exception:
+                pass
+
             logger.debug(f"[{self.name}] parse: 获取页面内容")
             html = await self._fetch_page(session, full_url)
             initial_state = self._extract_initial_state(html)
             note_data = self._parse_note_data(initial_state, full_url)
+
+            # 如果使用Cookie，优先使用Cookie API方式获取数据
+            cookie_note_data = None
+            if self.use_cookie and self.cookie and note_id:
+                logger.debug(f"[{self.name}] parse: 使用Cookie方式获取数据")
+                cookie_note_data = await self._fetch_page_with_cookie_api(
+                    session, note_id, xsec_source, xsec_token
+                )
+                if cookie_note_data:
+                    logger.debug(f"[{self.name}] parse: Cookie方式获取数据成功")
+                    # 合并Cookie获取的数据
+                    cookie_title = cookie_note_data.get("title", "")
+                    cookie_desc = cookie_note_data.get("desc", "")
+                    cookie_video_url = ""
+                    cookie_image_urls = []
+
+                    # 提取无水印视频URL
+                    if cookie_note_data.get("type") == "video":
+                        cookie_video_url = self._extract_no_watermark_video_url(cookie_note_data)
+
+                    # 提取图片URL
+                    if cookie_note_data.get("type") != "video":
+                        image_list = cookie_note_data.get("imageList", [])
+                        for img in image_list:
+                            if isinstance(img, dict):
+                                url_val = img.get("urlDefault") or img.get("url")
+                                if url_val:
+                                    if url_val.startswith("//"):
+                                        url_val = "https:" + url_val
+                                    cookie_image_urls.append(url_val)
+
+                    # 优先使用Cookie获取的数据
+                    if cookie_title:
+                        note_data["title"] = cookie_title
+                    if cookie_desc:
+                        note_data["desc"] = cookie_desc
+                    if cookie_video_url:
+                        note_data["video_url"] = cookie_video_url
+                        logger.debug(f"[{self.name}] parse: 使用无水印视频URL")
+                    if cookie_image_urls:
+                        note_data["image_urls"] = cookie_image_urls
+            elif not note_data.get("title") and not note_data.get("desc"):
+                # 如果普通解析数据不完整，尝试备用Cookie方式
+                logger.debug(f"[{self.name}] parse: 普通解析数据不完整，尝试Cookie方式")
+                cookie_note_data = await self._fetch_page_with_cookie_api(
+                    session, note_id, xsec_source, xsec_token
+                )
+                if cookie_note_data:
+                    logger.debug(f"[{self.name}] parse: Cookie备用方式获取数据成功")
+                    cookie_title = cookie_note_data.get("title", "")
+                    cookie_desc = cookie_note_data.get("desc", "")
+                    cookie_video_url = ""
+                    cookie_image_urls = []
+
+                    if cookie_note_data.get("type") == "video":
+                        cookie_video_url = self._extract_no_watermark_video_url(cookie_note_data)
+
+                    if cookie_note_data.get("type") != "video":
+                        image_list = cookie_note_data.get("imageList", [])
+                        for img in image_list:
+                            if isinstance(img, dict):
+                                url_val = img.get("urlDefault") or img.get("url")
+                                if url_val:
+                                    if url_val.startswith("//"):
+                                        url_val = "https:" + url_val
+                                    cookie_image_urls.append(url_val)
+
+                    if cookie_title and not note_data.get("title"):
+                        note_data["title"] = cookie_title
+                    if cookie_desc and not note_data.get("desc"):
+                        note_data["desc"] = cookie_desc
+                    if cookie_video_url and not note_data.get("video_url"):
+                        note_data["video_url"] = cookie_video_url
+                    if cookie_image_urls and not note_data.get("image_urls"):
+                        note_data["image_urls"] = cookie_image_urls
+
             hot_comments = self._collect_hot_comments_from_state(initial_state)
             logger.debug(f"[{self.name}] parse: 笔记数据提取成功")
 
@@ -675,6 +888,7 @@ class XiaohongshuParser(BaseVideoParser):
 
             referer = full_url
             user_agent = PC_UA if self._is_pc_url(full_url) else ANDROID_UA
+            headers = self._get_headers_for_url(full_url)
             image_headers = build_request_headers(
                 is_video=False,
                 referer=referer,
@@ -685,6 +899,11 @@ class XiaohongshuParser(BaseVideoParser):
                 referer=referer,
                 user_agent=user_agent
             )
+
+            # 如果使用Cookie，在请求头中添加Cookie
+            if self.use_cookie and self.cookie:
+                image_headers["Cookie"] = self.cookie
+                video_headers["Cookie"] = self.cookie
 
             if note_type == "video":
                 if not video_url:

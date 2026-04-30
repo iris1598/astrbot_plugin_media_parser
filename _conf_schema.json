@@ -26,6 +26,24 @@
                 ],
                 "default": "全部发送"
             },
+            "douyin_enhanced": {
+                "description": "抖音增强",
+                "type": "object",
+                "items": {
+                    "use_cookie": {
+                        "description": "使用Cookie解析",
+                        "type": "bool",
+                        "hint": "使用Cookie获取更完整的抖音内容",
+                        "default": false
+                    },
+                    "cookie": {
+                        "description": "抖音Cookie",
+                        "type": "string",
+                        "hint": "从浏览器获取的抖音Cookie",
+                        "default": ""
+                    }
+                }
+            },
             "tiktok": {
                 "description": "TikTok",
                 "type": "string",
@@ -69,6 +87,24 @@
                     "仅富媒体"
                 ],
                 "default": "全部发送"
+            },
+            "xiaohongshu_enhanced": {
+                "description": "小红书增强",
+                "type": "object",
+                "items": {
+                    "use_cookie": {
+                        "description": "使用Cookie解析",
+                        "type": "bool",
+                        "hint": "使用Cookie获取更完整的小红书内容",
+                        "default": false
+                    },
+                    "cookie": {
+                        "description": "小红书Cookie",
+                        "type": "string",
+                        "hint": "从浏览器获取的小红书Cookie",
+                        "default": ""
+                    }
+                }
             },
             "xianyu": {
                 "description": "闲鱼",
@@ -314,6 +350,24 @@
                 ],
                 "hint": "实际画质取决于账号权限和视频源",
                 "default": "不限制"
+            },
+            "parse_live": {
+                "description": "解析直播间",
+                "type": "bool",
+                "hint": "解析B站直播间链接并获取直播间信息",
+                "default": false
+            },
+            "parse_article": {
+                "description": "解析专栏",
+                "type": "bool",
+                "hint": "解析B站专栏/笔记链接",
+                "default": true
+            },
+            "parse_favorite": {
+                "description": "解析收藏夹",
+                "type": "bool",
+                "hint": "解析B站收藏夹链接（需要Cookie）",
+                "default": true
             },
             "admin_assist": {
                 "description": "管理员协助登录",

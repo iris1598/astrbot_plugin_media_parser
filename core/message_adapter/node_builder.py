@@ -79,8 +79,30 @@ def _mark_media_failure(
         metadata[count_key] = 1
 
 
+def _format_number(num: int) -> str:
+    """格式化数字显示
+
+    Args:
+        num: 数字
+
+    Returns:
+        格式化后的字符串
+    """
+    if num is None:
+        return "0"
+    try:
+        num = int(num)
+        if num >= 100000000:
+            return f"{num / 100000000:.1f}亿"
+        elif num >= 10000:
+            return f"{num / 10000:.1f}万"
+        return str(num)
+    except (TypeError, ValueError):
+        return "0"
+
+
 def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, enable_text_metadata: bool = True) -> Optional[Plain]:
-    """构建文本节点
+    """构建文本节点（参考nonebot-plugin-resolver风格）
 
     Args:
         metadata: 元数据字典
@@ -92,23 +114,146 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
     """
     if not enable_text_metadata:
         return None
-        
+
     text_parts = []
-    
-    if metadata.get('title'):
-        text_parts.append(f"标题：{metadata['title']}")
-    if metadata.get('author'):
-        text_parts.append(f"作者：{metadata['author']}")
-    if metadata.get('desc'):
-        text_parts.append(f"简介：{metadata['desc']}")
-    if metadata.get('timestamp'):
-        text_parts.append(f"发布时间：{metadata['timestamp']}")
-    
+
+    # 获取平台类型和内容类型
+    platform = metadata.get("platform", "")
+    content_type = metadata.get("content_type", "")
+    parser_name = metadata.get("parser_name", platform)
+
+    # 根据不同平台显示标识
+    platform_labels = {
+        "bilibili": "B站",
+        "douyin": "抖音",
+        "xiaohongshu": "小红书",
+        "weibo": "微博",
+        "kuaishou": "快手",
+        "tiktok": "TikTok",
+        "twitter": "Twitter",
+        "acfun": "AcFun",
+        "youtube": "YouTube",
+    }
+    platform_label = platform_labels.get(platform, platform)
+
+    # 直播间处理
+    if content_type == "live" or parser_name == "bilibili" and metadata.get("is_live") is not None:
+        title = metadata.get("title", "直播间")
+        author = metadata.get("author", "")
+        is_live = metadata.get("is_live", False)
+        live_status = "正在直播" if is_live else "未开播"
+
+        line_parts = [title]
+        if author:
+            line_parts.append(f"主播：{author}")
+        line_parts.append(live_status)
+        text_parts.append(" | ".join(line_parts))
+
+        if metadata.get("desc"):
+            text_parts.append(metadata["desc"])
+
+    # 专栏处理
+    elif content_type == "article":
+        title = metadata.get("title", "")
+        author = metadata.get("author", "")
+        desc = metadata.get("desc", "")
+        timestamp = metadata.get("timestamp", "")
+
+        line_parts = [title] if title else ["专栏"]
+        if author:
+            line_parts.append(f"作者：{author}")
+        text_parts.append(" | ".join(line_parts))
+
+        if desc:
+            if len(desc) > 200:
+                desc = desc[:200] + "..."
+            text_parts.append(desc)
+        if timestamp:
+            text_parts.append(f"发布时间：{timestamp}")
+
+    # 收藏夹处理
+    elif content_type == "favorite":
+        title = metadata.get("title", "收藏夹")
+        author = metadata.get("author", "")
+        timestamp = metadata.get("timestamp", "")
+
+        line_parts = [title]
+        if author:
+            line_parts.append(f"创建者：{author}")
+        text_parts.append(" | ".join(line_parts))
+
+        if timestamp:
+            text_parts.append(timestamp)
+        if metadata.get("desc"):
+            text_parts.append(metadata["desc"])
+
+    # 动态处理
+    elif metadata.get("timestamp") and "dynamic" in str(metadata.get("url", "")).lower():
+        title = metadata.get("title", "")
+        author = metadata.get("author", "")
+        desc = metadata.get("desc", "")
+
+        line_parts = [title] if title else ["动态"]
+        if author:
+            line_parts.append(f"作者：{author}")
+        text_parts.append(" | ".join(line_parts))
+
+        if desc:
+            if len(desc) > 200:
+                desc = desc[:200] + "..."
+            text_parts.append(desc)
+
+    # 普通视频/图集处理
+    else:
+        title = metadata.get("title", "")
+        author = metadata.get("author", "")
+
+        line_parts = [title] if title else ["视频"]
+        if author:
+            line_parts.append(f"UP主：{author}")
+        text_parts.append(" | ".join(line_parts))
+
+        # 添加播放量等统计信息
+        stat_info = metadata.get("stat_info", {})
+        if stat_info:
+            stat_parts = []
+            view = stat_info.get("view")
+            like = stat_info.get("like")
+            coin = stat_info.get("coin")
+            favorite = stat_info.get("favorite")
+            share = stat_info.get("share")
+
+            if view:
+                stat_parts.append(f"播放 {_format_number(view)}")
+            if like:
+                stat_parts.append(f"点赞 {_format_number(like)}")
+            if coin:
+                stat_parts.append(f"投币 {_format_number(coin)}")
+            if favorite:
+                stat_parts.append(f"收藏 {_format_number(favorite)}")
+            if share:
+                stat_parts.append(f"分享 {_format_number(share)}")
+
+            if stat_parts:
+                text_parts.append(" | ".join(stat_parts))
+
+        # 添加简介
+        desc = metadata.get("desc", "")
+        if desc:
+            if len(desc) > 300:
+                desc = desc[:300] + "..."
+            if desc.strip():
+                text_parts.append(desc)
+
+        # 添加时间
+        if metadata.get("timestamp"):
+            text_parts.append(f"发布时间：{metadata['timestamp']}")
+
     video_count = metadata.get('video_count', 0)
     if video_count > 0:
         actual_max_video_size_mb = metadata.get('max_video_size_mb')
         total_video_size_mb = metadata.get('total_video_size_mb', 0.0)
-        
+
         if actual_max_video_size_mb is not None:
             if video_count == 1:
                 text_parts.append(f"视频大小：{actual_max_video_size_mb:.1f} MB")
@@ -117,23 +262,14 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
                     f"视频大小：最大 {actual_max_video_size_mb:.1f} MB "
                     f"(共 {video_count} 个视频, 总计 {total_video_size_mb:.1f} MB)"
                 )
-    
-    has_valid_media = metadata.get('has_valid_media')
-    video_urls = metadata.get('video_urls', [])
-    image_urls = metadata.get('image_urls', [])
-    
-    has_text_metadata = bool(
-        metadata.get('title') or 
-        metadata.get('author') or 
-        metadata.get('desc') or 
-        metadata.get('timestamp')
-    )
 
+    has_valid_media = metadata.get('has_valid_media')
     access_status = metadata.get("access_status")
     access_message = metadata.get("access_message")
     available_length_ms = metadata.get("available_length_ms")
     timelength_ms = metadata.get("timelength_ms")
     is_preview_only = metadata.get("is_preview_only")
+
     if access_status and access_status != "full" and access_message:
         text_parts.append(f"时长：{access_message}")
     elif is_preview_only and available_length_ms:
@@ -148,24 +284,24 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
             if full_seconds is not None:
                 full_min, full_sec = divmod(full_seconds, 60)
                 text_parts.append(
-                    f"时长：当前可解析 {available_min:02d}:{available_sec:02d} / "
-                    f"全长 {full_min:02d}:{full_sec:02d}"
+                    f"可看：{available_min:02d}:{available_sec:02d} / "
+                    f"{full_min:02d}:{full_sec:02d}"
                 )
             else:
                 text_parts.append(
-                    f"时长：当前可解析 {available_min:02d}:{available_sec:02d}"
+                    f"可看：{available_min:02d}:{available_sec:02d}"
                 )
         except (TypeError, ValueError):
             pass
 
     hot_comments = metadata.get("hot_comments", [])
     if isinstance(hot_comments, list) and hot_comments:
-        text_parts.append(f"热评（{len(hot_comments)}条）:")
+        text_parts.append(f"\n热评（{len(hot_comments)}条）：")
         total = len(hot_comments)
         for idx, item in enumerate(hot_comments, start=1):
             if not isinstance(item, dict):
                 continue
-            username = str(item.get("username", "") or "").strip() or "未知用户"
+            username = str(item.get("username", "") or "").strip() or "匿名用户"
             uid = str(item.get("uid", "") or "").strip()
             try:
                 likes = int(item.get("likes", 0) or 0)
@@ -174,36 +310,32 @@ def build_text_node(metadata: Dict[str, Any], max_video_size_mb: float = 0.0, en
             time_text = str(item.get("time", "") or "").strip() or "-"
             message = str(item.get("message", "") or "").strip() or "（无文本内容）"
             user_label = f"{username}(uid:{uid})" if uid else username
-            text_parts.append(f"[{idx}] {user_label}")
-            text_parts.append(f"点赞: {likes} | 时间: {time_text}")
-            text_parts.append(message)
+            text_parts.append(f"[{idx}] {user_label} {likes}赞")
+            text_parts.append(f"    {message}")
             if idx < total:
                 text_parts.append("")
-    
+
     if metadata.get('error'):
         text_parts.append(f"解析失败：{metadata['error']}")
 
-    if has_valid_media is False and (video_urls or image_urls) and has_text_metadata and not metadata.get('exceeds_max_size'):
+    if has_valid_media is False and (metadata.get('video_urls') or metadata.get('image_urls')) and metadata.get('title') and not metadata.get('exceeds_max_size'):
         if metadata.get('has_access_denied'):
-            text_parts.append("解析失败：媒体访问被拒绝(403 Forbidden)")
+            text_parts.append("媒体访问被拒绝(403 Forbidden)")
         else:
-            text_parts.append("解析失败：直链内未找到有效媒体")
-    
+            text_parts.append("直链内未找到有效媒体")
+
     if metadata.get('exceeds_max_size'):
         actual_video_size = metadata.get('max_video_size_mb')
         if actual_video_size is not None:
             if max_video_size_mb > 0:
                 text_parts.append(
-                    f"解析失败：视频大小超过管理员设定的限制（{actual_video_size:.1f}MB > {max_video_size_mb:.1f}MB）"
+                    f"视频大小超过限制（{actual_video_size:.1f}MB > {max_video_size_mb:.1f}MB）"
                 )
             else:
-                text_parts.append(f"解析失败：视频大小超过限制（{actual_video_size:.1f}MB）")
-    
+                text_parts.append(f"视频大小超过限制（{actual_video_size:.1f}MB）")
+
     _append_media_skip_summary(text_parts, metadata)
-    
-    if metadata.get('url'):
-        text_parts.append(f"原始链接：{metadata['url']}")
-    
+
     if not text_parts:
         return None
     desc_text = "\n".join(text_parts)

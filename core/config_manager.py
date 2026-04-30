@@ -228,6 +228,21 @@ class BilibiliEnhancedConfig:
     enable_admin_assist: bool = False
     admin_reply_timeout_minutes: int = 1440
     admin_request_cooldown_minutes: int = 1440
+    parse_live: bool = False
+    parse_article: bool = True
+    parse_favorite: bool = True
+
+
+@dataclass
+class XiaohongshuEnhancedConfig:
+    use_cookie: bool = False
+    cookie: str = ""
+
+
+@dataclass
+class DouyinEnhancedConfig:
+    use_cookie: bool = False
+    cookie: str = ""
 
 
 @dataclass
@@ -480,6 +495,27 @@ class ConfigManager:
             enable_admin_assist=enable_admin_assist,
             admin_reply_timeout_minutes=admin_reply_timeout,
             admin_request_cooldown_minutes=admin_request_cooldown,
+            parse_live=bool(bili.get("parse_live", False)),
+            parse_article=bool(bili.get("parse_article", True)),
+            parse_favorite=bool(bili.get("parse_favorite", True)),
+        )
+
+        # --- xiaohongshu_enhanced ---
+        xhs_enhanced = config.get("xiaohongshu_enhanced", {})
+        if not isinstance(xhs_enhanced, dict):
+            xhs_enhanced = {}
+        self.xiaohongshu = XiaohongshuEnhancedConfig(
+            use_cookie=bool(xhs_enhanced.get("use_cookie", False)),
+            cookie=str(xhs_enhanced.get("cookie", "") or "").strip(),
+        )
+
+        # --- douyin_enhanced ---
+        dy_enhanced = config.get("douyin_enhanced", {})
+        if not isinstance(dy_enhanced, dict):
+            dy_enhanced = {}
+        self.douyin = DouyinEnhancedConfig(
+            use_cookie=bool(dy_enhanced.get("use_cookie", False)),
+            cookie=str(dy_enhanced.get("cookie", "") or "").strip(),
         )
 
         # --- proxy ---
@@ -560,10 +596,16 @@ class ConfigManager:
                 admin_request_cooldown_minutes=self.bilibili.admin_request_cooldown_minutes,
                 credential_path=self.bilibili.cookie_runtime_file,
                 hot_comment_count=bili_hc,
+                parse_live=self.bilibili.parse_live,
+                parse_article=self.bilibili.parse_article,
+                parse_favorite=self.bilibili.parse_favorite,
             )
             parsers.append(self.bilibili_parser)
         if self._enable_douyin:
-            parsers.append(DouyinParser())
+            parsers.append(DouyinParser(
+                use_cookie=self.douyin.use_cookie,
+                cookie=self.douyin.cookie,
+            ))
         if self._enable_tiktok:
             parsers.append(TikTokParser(
                 use_proxy=self.proxy.tiktok_use_proxy,
@@ -574,7 +616,11 @@ class ConfigManager:
         if self._enable_weibo:
             parsers.append(WeiboParser(hot_comment_count=weibo_hc))
         if self._enable_xiaohongshu:
-            parsers.append(XiaohongshuParser(hot_comment_count=xhs_hc))
+            parsers.append(XiaohongshuParser(
+                hot_comment_count=xhs_hc,
+                use_cookie=self.xiaohongshu.use_cookie,
+                cookie=self.xiaohongshu.cookie,
+            ))
         if self._enable_xianyu:
             parsers.append(XianyuParser())
         if self._enable_toutiao:

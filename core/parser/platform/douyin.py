@@ -26,7 +26,13 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
 
     """抖音解析器实现。"""
 
-    def __init__(self):
+    def __init__(self, use_cookie: bool = False, cookie: str = ""):
+        """初始化抖音解析器
+
+        Args:
+            use_cookie: 是否使用Cookie
+            cookie: 抖音Cookie
+        """
         super().__init__("douyin")
         self.douyin_headers = {
             "User-Agent": DOUYIN_USER_AGENT,
@@ -36,6 +42,8 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
             "Accept-Encoding": "gzip, deflate",
         }
         self.semaphore = asyncio.Semaphore(Config.PARSER_MAX_CONCURRENT)
+        self.use_cookie = bool(use_cookie)
+        self.cookie = str(cookie or "").strip()
 
     @classmethod
     def _is_douyin_url(cls, url: str) -> bool:
@@ -139,7 +147,24 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
         item_id: str,
         is_note: bool = False
     ) -> Optional[Dict[str, Any]]:
-        """获取抖音视频 / 笔记信息。"""
+        """获取抖音视频 / 笔记信息。
+
+        Args:
+            session: aiohttp会话
+            item_id: 视频/笔记ID
+            is_note: 是否为笔记类型
+
+        Returns:
+            包含视频/笔记信息的字典
+        """
+        # 首先尝试使用Cookie API方式获取数据
+        if self.use_cookie and self.cookie:
+            cookie_result = await self._fetch_with_cookie_api(session, item_id)
+            if cookie_result:
+                logger.debug(f"[{self.name}] fetch_douyin_info: Cookie方式获取数据成功")
+                return cookie_result
+
+        # 回退到普通方式
         if is_note:
             url = f"https://www.iesdouyin.com/share/note/{item_id}/"
         else:
@@ -217,6 +242,97 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
                 "user_agent": DOUYIN_USER_AGENT,
             }
         except (aiohttp.ClientError, asyncio.TimeoutError):
+            return None
+
+    async def _fetch_with_cookie_api(
+        self,
+        session: aiohttp.ClientSession,
+        item_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """使用Cookie API方式获取抖音数据（需要登录）
+
+        Args:
+            session: aiohttp会话
+            item_id: 视频/笔记ID
+
+        Returns:
+            包含视频/笔记信息的字典，失败时返回None
+        """
+        # 抖音分享视频API
+        api_url = f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={item_id}&aid=6383"
+        headers = {
+            "User-Agent": DOUYIN_USER_AGENT,
+            "Referer": f"https://www.douyin.com/video/{item_id}",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "Cookie": self.cookie,
+        }
+
+        try:
+            async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    logger.debug(f"[{self.name}] Cookie API请求失败，状态码: {response.status}")
+                    return None
+
+                data = await response.json()
+                aweme_detail = data.get("aweme_detail")
+
+                if not aweme_detail:
+                    logger.debug(f"[{self.name}] Cookie API返回数据为空")
+                    return None
+
+                # 解析返回数据
+                author_info = aweme_detail.get("author", {})
+                nickname = author_info.get("nickname", "")
+                unique_id = author_info.get("unique_id", "")
+
+                # 判断是否为图集
+                is_gallery = bool(aweme_detail.get("image_post_info", {}).get("images"))
+
+                image_url_lists = []
+                video_url_list = []
+
+                if is_gallery:
+                    # 图集处理
+                    images = aweme_detail.get("image_post_info", {}).get("images", [])
+                    for image in images:
+                        url_list = []
+                        # 获取无水印图片
+                        for url_info in image.get("url_list", []):
+                            if url_info:
+                                url_list.append(url_info)
+                        if url_list:
+                            image_url_lists.append(url_list)
+                else:
+                    # 视频处理
+                    video_info = aweme_detail.get("video", {})
+                    play_addr = video_info.get("play_addr", {})
+                    video_uri = play_addr.get("uri", "")
+
+                    # 尝试多种方式获取视频URL
+                    if video_uri:
+                        # 使用抖音视频直链
+                        video_url_list = [f"https://www.douyin.com/video/{item_id}"]
+
+                        # 尝试从play_addr的h264流获取
+                        if "h264" in str(video_info):
+                            h264_list = video_info.get("has_compress", {}).get("list", [])
+                            if h264_list:
+                                video_url_list = [h264_list[0].get("url", "")]
+
+                return {
+                    "title": aweme_detail.get("desc", ""),
+                    "author": self._build_douyin_author(nickname, unique_id),
+                    "timestamp": self._format_timestamp(aweme_detail.get("create_time")),
+                    "video_url_list": video_url_list,
+                    "image_url_lists": image_url_lists,
+                    "is_gallery": is_gallery,
+                    "user_agent": DOUYIN_USER_AGENT,
+                    "aweme_detail": aweme_detail,  # 保存原始数据供后续处理
+                }
+        except Exception as e:
+            logger.debug(f"[{self.name}] Cookie API请求异常: {e}")
             return None
 
     @classmethod
@@ -313,8 +429,8 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
         return result
 
     @staticmethod
-    def _build_result_headers(user_agent: str) -> Dict[str, Dict[str, str]]:
-        return {
+    def _build_result_headers(user_agent: str, cookie: str = "") -> Dict[str, Dict[str, str]]:
+        headers = {
             "image_headers": build_request_headers(
                 is_video=False,
                 referer=DOUYIN_REFERER,
@@ -326,6 +442,10 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
                 user_agent=user_agent,
             ),
         }
+        if cookie:
+            headers["image_headers"]["Cookie"] = cookie
+            headers["video_headers"]["Cookie"] = cookie
+        return headers
 
     async def parse(
         self,
@@ -361,7 +481,22 @@ class DouyinParser(ShortVideoParserMixin, BaseVideoParser):
             timestamp = result.get("timestamp", "")
             display_url = result.get("display_url", url)
             user_agent = result.get("user_agent", DOUYIN_USER_AGENT)
-            headers = self._build_result_headers(user_agent)
+            headers = self._build_result_headers(user_agent, self.cookie if self.use_cookie else "")
+            aweme_detail = result.get("aweme_detail")
+
+            # 如果有Cookie API返回的原始数据，尝试获取更完整的视频URL
+            if aweme_detail and not is_gallery:
+                video_info = aweme_detail.get("video", {})
+                if video_info:
+                    play_addr = video_info.get("play_addr", {})
+                    # 尝试获取无水印的playwm地址
+                    playwm_addr = video_info.get("playwm_addr", {})
+                    if playwm_addr and playwm_addr.get("uri"):
+                        video_url_list = [f"https://www.douyin.com/video/{item_id}"]
+                    # 尝试获取cover地址作为封面
+                    cover_url = video_info.get("cover", {}).get("url_list", [])
+                    if cover_url:
+                        result["cover_url"] = cover_url[0]
 
             if is_gallery:
                 logger.debug(
